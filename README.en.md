@@ -1,25 +1,36 @@
 # dsh-autonomous-scheduler
 
-> **Proactive Intelligence scheduling plugin** — the system no longer waits passively for instructions; it perceives, decides, and evolves on its own.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](./tsconfig.json)
+[![Node](https://img.shields.io/badge/Node-%3E%3D18-339933?logo=nodedotjs&logoColor=white)](#installation)
+[![topic](https://img.shields.io/badge/topic-dsh--plugin-8250df)](https://github.com/topics/dsh-plugin)
+
+> **Proactive Intelligence scheduling plugin** — a multi-model collaborative scheduling system for the DeepSeek Harness (DSH) ecosystem: it perceives, decides, and evolves on its own.
 >
 > English | [中文](./README.md)
 
+![Dashboard illustration](./assets/dashboard.jpg)
+
 ## What is Proactive Intelligence?
 
-Traditional schedulers are **reactive**: they respond only when a signal arrives and idle otherwise. This plugin gives the system **proactive intelligence**:
+Traditional schedulers are **reactive**: they respond only when a signal arrives and idle otherwise. On top of the "perceive → decide → execute → reflect → consolidate" loop, this plugin adds an autonomy layer so the system:
 
-- **When idle**, the system actively observes its own runtime state, discovers bottlenecks, and generates improvement goals
-- **Facing unknown territory**, the system actively launches explorations, turning "unknown" into "experienced"
-- **Anticipating future load**, the system actively predicts signal arrival trends and reserves capacity ahead of time
-- **On anomalies**, the system actively trips circuit breakers, rate-limits, and degrades — instead of waiting to crash
+- **When idle**, actively observes its own runtime state, discovers bottlenecks, and generates improvement goals
+- **Facing unknown territory**, actively launches explorations, turning "unknown" into "experienced"
+- **Anticipating future load**, actively predicts signal arrival trends and reserves capacity ahead of time
+- **On anomalies**, actively trips circuit breakers, rate-limits, and degrades — instead of waiting to crash
 
-Proactive Intelligence = the perpetual loop of **perceive → decide → execute → reflect → consolidate**, plus three proactive pillars:
-
-| Pillar | Module | Proactive Capability |
-|--------|--------|----------------------|
-| Foreseeing | `world-model.ts` | Learns signal arrival patterns, predicts future load, detects rising trends |
-| Curiosity | `curiosity-engine.ts` | Scans knowledge gaps, autonomously generates exploration tasks |
-| Boundaries | `safety-governor.ts` | Rate limiting, budgeting, circuit breaking, confidence gating, kill switch |
+```mermaid
+graph LR
+  S[Sentinel<br/>Perception] --> D[Decision Engine<br/>Strategic Decisions]
+  D --> E[Executor<br/>Parallel Execution]
+  E --> R[Reflection Engine<br/>Quality Review]
+  R --> M[Long-term Memory<br/>Consolidation]
+  M -->|Experience Retrieval| D
+  R -->|Insights| L[Autonomy Loop<br/>Goals / Meta-cognition / Evolution]
+  L -->|Generated Goals| D
+  L --> P[Three Pillars<br/>World Model · Curiosity · Safety Governor]
+```
 
 ## Core Features
 
@@ -40,9 +51,9 @@ Proactive Intelligence = the perpetual loop of **perceive → decide → execute
 - Long-term memory: task patterns, model profiles, and lessons persisted across sessions
 
 ### The Three Pillars of Proactive Intelligence
-- **World Model**: arrival rate statistics, hourly histograms, arrival prediction (with confidence intervals), trend detection, prediction calibration (MAE)
-- **Curiosity Engine**: knowledge gap scanning (unexplored / low-experience / high-failure), novelty scoring, health-adaptive exploration budget
-- **Safety Governor**: per-minute rate limiting, token/cost budgets, circuit breaker (consecutive failures → cooldown → half-open), confidence gating, kill switch, audit logging
+- **World Model** (`world-model.ts`): arrival rate statistics, hourly histograms, arrival prediction (with confidence intervals), trend detection, prediction calibration (MAE)
+- **Curiosity Engine** (`curiosity-engine.ts`): knowledge gap scanning (unexplored / low-experience / high-failure), novelty scoring, health-adaptive exploration budget
+- **Safety Governor** (`safety-governor.ts`): per-minute rate limiting, token/cost budgets, circuit breaker (consecutive failures → cooldown → half-open), confidence gating, kill switch, audit logging
 
 ### Engineering Infrastructure
 - Raft consensus, distributed sync, hot reload, AES-256 encrypted storage
@@ -62,22 +73,68 @@ Each heartbeat executes an 8-step orchestration:
 7. Strategy evolution — evolve decision strategies via genetic algorithm
 8. Memory maintenance — experience distillation + forgetting curve
 
-## Quick Start
+## Installation
+
+Requirements: Node.js ≥ 18, pnpm.
 
 ```bash
-npm install
-npm run build
+git clone https://github.com/beijingwahw/dsh-autonomous-scheduler.git
+cd dsh-autonomous-scheduler
+pnpm install
+pnpm build
 ```
 
-Configure models and signal sources in `cordis.yml`, then load the plugin. Control the autonomy loop via the `manage_autonomy` tool:
+## Configuration
 
-- `start` / `stop` — start/stop the autonomy loop
-- `tick` — manually execute one heartbeat
-- `introspect` — get the seven-dimension introspection report
-- `kill-switch` / `revive` — emergency stop / recovery
-- `reset-circuit` — reset the circuit breaker
+Set the environment variable, then register the plugin in `cordis.yml` (minimal example):
 
-Query via the `query_memory` tool: `world-model` / `curiosity` / `governance` / `introspect`, etc.
+```bash
+export DEEPSEEK_API_KEY=sk-xxxx
+```
+
+```yaml
+- name: dsh-autonomous-scheduler
+  config:
+    strategistModel:
+      id: deepseek-v4-pro
+      endpoint: https://api.deepseek.com
+      apiKey: ${DEEPSEEK_API_KEY}
+    models:
+      - id: deepseek-v4-pro
+        timeout: 90000
+        maxConcurrency: 3
+        costPerKToken: 0.014
+        contextWindow: 128000
+    sentinel:
+      watchCodeChanges: true
+      aggregationWindow: 5
+    qualityThreshold: 0.7
+```
+
+Full configuration options (encryption / sync / consensus / hot reload / tenants) are documented in [cordis.yml](./cordis.yml).
+
+## Tool Usage Example
+
+Get the seven-dimension introspection report via `manage_autonomy`:
+
+```jsonc
+// Call: manage_autonomy { "action": "introspect" }
+// Response (excerpted example):
+{
+  "loop":      { "running": true, "tickCount": 42 },
+  "health":    { "score": 0.86 },
+  "goals":     { "active": 3 },
+  "exploration": { "totalExplorations": 5 },
+  "governance":  { "circuitState": "closed" },
+  "worldModel":  { "types": 4 },
+  "evolution":   { "generation": 7 }
+}
+```
+
+Other common operations:
+
+- `manage_autonomy`: `start` / `stop` / `tick` / `kill-switch` / `revive` / `reset-circuit`
+- `query_memory`: `world-model` / `curiosity` / `governance` / `patterns` / `lessons`, etc.
 
 ## Project Structure
 
@@ -107,4 +164,4 @@ src/
 
 ## License
 
-MIT
+[MIT](./LICENSE)

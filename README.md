@@ -1,25 +1,36 @@
 # dsh-autonomous-scheduler
 
-> **主动智能（Proactive Intelligence）调度插件** —— 系统不再被动等待指令，而是自主感知、自主决策、自主进化。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](./tsconfig.json)
+[![Node](https://img.shields.io/badge/Node-%3E%3D18-339933?logo=nodedotjs&logoColor=white)](#安装)
+[![topic](https://img.shields.io/badge/topic-dsh--plugin-8250df)](https://github.com/topics/dsh-plugin)
+
+> **主动智能（Proactive Intelligence）调度插件** —— DeepSeek Harness（DSH）生态中的多模型协同调度系统：自主感知、自主决策、自主进化。
 >
 > [English](./README.en.md) | 中文
 
+![Dashboard 示意图](./assets/dashboard.jpg)
+
 ## 什么是主动智能？
 
-传统调度系统是**被动的**：收到信号才响应，没有信号就空转。本插件让系统具备**主动智能**：
+传统调度系统是**被动的**：收到信号才响应，没有信号就空转。本插件在「感知 → 决策 → 执行 → 反思 → 沉淀」闭环之上叠加自主层，让系统：
 
-- **没有任务时**，系统主动观察自身运行状态、发现瓶颈、生成改进目标
-- **遇到未知领域**，系统主动发起探索，把"不知道"变成"有经验"
-- **面对未来负载**，系统主动预测信号到达趋势，提前预留容量
-- **出现异常时**，系统主动熔断、限流、降级，而不是等到崩溃
+- **没有任务时**，主动观察自身运行状态、发现瓶颈、生成改进目标
+- **遇到未知领域**，主动发起探索，把"不知道"变成"有经验"
+- **面对未来负载**，主动预测信号到达趋势，提前预留容量
+- **出现异常时**，主动熔断、限流、降级，而不是等到崩溃
 
-主动智能 = **感知 → 决策 → 执行 → 反思 → 沉淀** 的永动闭环，加上三大主动支柱：
-
-| 支柱 | 模块 | 主动能力 |
-|------|------|----------|
-| 预见 | `world-model.ts` | 学习信号到达规律，预测未来负载，发现上升趋势 |
-| 好奇 | `curiosity-engine.ts` | 扫描知识盲区，自主生成探索任务 |
-| 边界 | `safety-governor.ts` | 限流、预算、熔断、置信度门控、紧急停止 |
+```mermaid
+graph LR
+  S[Sentinel<br/>信号感知] --> D[决策引擎<br/>战略决策]
+  D --> E[Executor<br/>并行执行]
+  E --> R[反思引擎<br/>质量反思]
+  R --> M[长期记忆<br/>经验沉淀]
+  M -->|经验检索| D
+  R -->|洞察| L[自主循环<br/>目标/元认知/进化]
+  L -->|生成目标| D
+  L --> P[三支柱<br/>世界模型·好奇心·安全治理]
+```
 
 ## 核心特性
 
@@ -40,9 +51,9 @@
 - 长期记忆：任务模式、模型画像、经验教训跨会话沉淀
 
 ### 主动智能三支柱
-- **世界模型**：信号到达率统计、小时直方图、到达预测（含置信区间）、趋势检测、预测校准（MAE）
-- **好奇心引擎**：知识盲区扫描（未探索 / 低经验 / 高失败率）、新颖度评分、健康度自适应探索预算
-- **安全治理**：每分钟限流、token/成本预算、熔断器（连续失败→冷却→半开）、置信度门控、紧急停止开关、审计日志
+- **世界模型**（`world-model.ts`）：信号到达率统计、小时直方图、到达预测（含置信区间）、趋势检测、预测校准（MAE）
+- **好奇心引擎**（`curiosity-engine.ts`）：知识盲区扫描（未探索 / 低经验 / 高失败率）、新颖度评分、健康度自适应探索预算
+- **安全治理**（`safety-governor.ts`）：每分钟限流、token/成本预算、熔断器（连续失败→冷却→半开）、置信度门控、紧急停止开关、审计日志
 
 ### 工程基础设施
 - Raft 共识、分布式同步、热更新、AES-256 加密存储
@@ -62,22 +73,68 @@
 7. 策略进化 —— 遗传算法演化决策策略
 8. 记忆维护 —— 经验蒸馏 + 遗忘曲线
 
-## 快速开始
+## 安装
+
+要求：Node.js ≥ 18、pnpm。
 
 ```bash
-npm install
-npm run build
+git clone https://github.com/beijingwahw/dsh-autonomous-scheduler.git
+cd dsh-autonomous-scheduler
+pnpm install
+pnpm build
 ```
 
-在 `cordis.yml` 中配置模型与信号源后加载插件。通过 `manage_autonomy` 工具控制自主循环：
+## 配置
 
-- `start` / `stop` —— 启停自主循环
-- `tick` —— 手动执行一次心跳
-- `introspect` —— 获取七维自省报告
-- `kill-switch` / `revive` —— 紧急停止 / 恢复
-- `reset-circuit` —— 重置熔断器
+设置环境变量后，在 `cordis.yml` 中注册插件（最小示例）：
 
-通过 `query_memory` 工具查询：`world-model` / `curiosity` / `governance` / `introspect` 等。
+```bash
+export DEEPSEEK_API_KEY=sk-xxxx
+```
+
+```yaml
+- name: dsh-autonomous-scheduler
+  config:
+    strategistModel:
+      id: deepseek-v4-pro
+      endpoint: https://api.deepseek.com
+      apiKey: ${DEEPSEEK_API_KEY}
+    models:
+      - id: deepseek-v4-pro
+        timeout: 90000
+        maxConcurrency: 3
+        costPerKToken: 0.014
+        contextWindow: 128000
+    sentinel:
+      watchCodeChanges: true
+      aggregationWindow: 5
+    qualityThreshold: 0.7
+```
+
+完整配置项（加密 / 同步 / 共识 / 热更新 / 租户）见仓库内 [cordis.yml](./cordis.yml)。
+
+## 工具调用示例
+
+通过 `manage_autonomy` 获取七维自省报告：
+
+```jsonc
+// 调用：manage_autonomy { "action": "introspect" }
+// 返回（示例，字段节选）：
+{
+  "loop":      { "running": true, "tickCount": 42 },
+  "health":    { "score": 0.86 },
+  "goals":     { "active": 3 },
+  "exploration": { "totalExplorations": 5 },
+  "governance":  { "circuitState": "closed" },
+  "worldModel":  { "types": 4 },
+  "evolution":   { "generation": 7 }
+}
+```
+
+其他常用操作：
+
+- `manage_autonomy`：`start` / `stop` / `tick` / `kill-switch` / `revive` / `reset-circuit`
+- `query_memory`：`world-model` / `curiosity` / `governance` / `patterns` / `lessons` 等
 
 ## 项目结构
 
@@ -107,4 +164,4 @@ src/
 
 ## 许可
 
-MIT
+[MIT](./LICENSE)
