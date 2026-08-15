@@ -33,6 +33,7 @@ Proactive Intelligence = the perpetual loop of **perceive → decide → execute
 - Decision caching and feedback loop
 
 ### Self-Reflection & Evolution
+- Goal engine: generates goals from insights and decomposes them into subtasks
 - Reflection engine: auto-retry / model switching when quality falls below threshold
 - Meta-cognition engine: continuous KPI health monitoring with self-tuning
 - Strategy evolution engine: genetic algorithm evolving optimal decision genes
