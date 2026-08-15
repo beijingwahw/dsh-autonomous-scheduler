@@ -9,7 +9,6 @@
 >
 > [English](./README.en.md) | 中文
 
-![Dashboard 示意图](./assets/dashboard.jpg)
 
 ## 什么是主动智能？
 
