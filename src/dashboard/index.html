@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>dsh-autonomous-scheduler 实时仪表盘</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 13px; padding: 16px; }
+  h1 { font-size: 16px; margin-bottom: 4px; }
+  .sub { color: var(--muted); margin-bottom: 16px; font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .panel h2 { font-size: 13px; color: var(--accent); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--border); }
+  .badge.ok { background: rgba(63,185,80,.15); color: var(--green); }
+  .badge.err { background: rgba(248,81,73,.15); color: var(--red); }
+  .stat-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .stat { flex: 1; min-width: 90px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; text-align: center; }
+  .stat .num { font-size: 20px; font-weight: 700; color: var(--accent); }
+  .stat .label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .feed { max-height: 320px; overflow-y: auto; }
+  .event { padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 12px; display: flex; gap: 8px; align-items: baseline; }
+  .event .time { color: var(--muted); flex-shrink: 0; }
+  .event .type { flex-shrink: 0; font-weight: 600; }
+  .event .detail { color: var(--muted); word-break: break-all; }
+  .t-signal-received { color: var(--yellow); } .t-batch-start { color: var(--accent); }
+  .t-strategist-thinking { color: var(--purple); } .t-plan-start { color: var(--accent); }
+  .t-node-start { color: var(--text); } .t-node-complete { color: var(--green); }
+  .t-node-error { color: var(--red); } .t-node-reflect { color: var(--purple); }
+  .t-cascade-trigger { color: var(--yellow); } .t-plan-complete { color: var(--green); }
+  .t-role-change { color: var(--purple); } .t-plugin-reloaded { color: var(--accent); }
+  .t-connected { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--green); }
+  .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+</style>
+</head>
+<body>
+<h1>dsh-autonomous-scheduler 实时仪表盘</h1>
+<div class="sub">自主智能多模型协同调度系统 · 10 步执行链路实时监控 · <span id="conn-state" class="badge err">未连接</span></div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>全局统计</h2>
+    <div class="stat-row">
+      <div class="stat"><div class="num" id="st-signals">0</div><div class="label">信号总数</div></div>
+      <div class="stat"><div class="num" id="st-batches">0</div><div class="label">聚合批次</div></div>
+      <div class="stat"><div class="num" id="st-plans">0</div><div class="label">执行计划</div></div>
+      <div class="stat"><div class="num" id="st-success">0</div><div class="label">成功计划</div></div>
+      <div class="stat"><div class="num" id="st-nodes">0</div><div class="label">子任务完成</div></div>
+    </div>
+    <h2 style="margin-top:12px">模型状态 <span class="badge" id="model-count">0</span></h2>
+    <table>
+      <thead><tr><th>模型</th><th>活跃/排队</th><th>成功率</th><th>平均延迟</th><th>Token</th></tr></thead>
+      <tbody id="model-table"><tr><td colspan="5" class="empty">等待数据…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>实时事件流 <span class="badge" id="event-count">0</span></h2>
+    <div class="feed" id="event-feed"><div class="empty">等待事件…</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>执行计划</h2>
+    <div class="feed" id="plan-feed"><div class="empty">暂无计划</div></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const stats = { signals: 0, batches: 0, plans: 0, success: 0, nodes: 0, events: 0 };
+  const MAX_EVENTS = 200;
+
+  function fmtTime(ts) {
+    const d = new Date(ts);
+    return d.toTimeString().slice(0, 8);
+  }
+
+  function addEvent(ev) {
+    stats.events += 1;
+    $('event-count').textContent = stats.events;
+    const feed = $('event-feed');
+    if (feed.querySelector('.empty')) feed.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'event';
+    const detail = Object.entries(ev)
+      .filter(([k]) => !['type', 'timestamp'].includes(k))
+      .map(([k, v]) => k + '=' + (typeof v === 'object' ? JSON.stringify(v) : v))
+      .join(' ');
+    row.innerHTML =
+      '<span class="time">' + fmtTime(ev.timestamp || Date.now()) + '</span>' +
+      '<span class="type t-' + ev.type + '">' + ev.type + '</span>' +
+      '<span class="detail">' + (detail.length > 160 ? detail.slice(0, 160) + '…' : detail) + '</span>';
+    feed.prepend(row);
+    while (feed.children.length > MAX_EVENTS) feed.removeChild(feed.lastChild);
+  }
+
+  function addPlan(ev) {
+    const feed = $('plan-feed');
+    if (feed.querySelector('.empty')) feed.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'event';
+    const ok = ev.success !== false;
+    row.innerHTML =
+      '<span class="time">' + fmtTime(ev.timestamp || Date.now()) + '</span>' +
+      '<span class="type" style="color:' + (ok ? 'var(--green)' : 'var(--red)') + '">' + (ok ? '✓' : '✗') + '</span>' +
+      '<span class="detail">' + (ev.signal && ev.signal.type ? '[' + ev.signal.type + '] ' : '') +
+      (ev.plan && ev.plan.objective ? ev.plan.objective : '计划') +
+      (ev.nodeCount ? ' · ' + ev.nodeCount + ' 节点' : '') + '</span>';
+    feed.prepend(row);
+    while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+  }
+
+  function handleEvent(ev) {
+    addEvent(ev);
+    switch (ev.type) {
+      case 'signal-received': stats.signals += 1; break;
+      case 'batch-start': stats.batches += 1; break;
+      case 'plan-start': stats.plans += 1; addPlan(ev); break;
+      case 'plan-complete': if (ev.success) stats.success += 1; break;
+      case 'node-complete': stats.nodes += 1; break;
+      case 'model-status': renderModels(ev.models || []); return;
+    }
+    $('st-signals').textContent = stats.signals;
+    $('st-batches').textContent = stats.batches;
+    $('st-plans').textContent = stats.plans;
+    $('st-success').textContent = stats.success;
+    $('st-nodes').textContent = stats.nodes;
+  }
+
+  function renderModels(models) {
+    $('model-count').textContent = models.length;
+    const tbody = $('model-table');
+    if (!models.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">无模型数据</td></tr>'; return; }
+    tbody.innerHTML = models.map((m) =>
+      '<tr><td>' + m.id + '</td>' +
+      '<td>' + m.activeRequests + '/' + m.queuedRequests + '</td>' +
+      '<td><div class="bar"><div style="width:' + Math.round(m.successRate * 100) + '%"></div></div>' + Math.round(m.successRate * 100) + '%</td>' +
+      '<td>' + m.avgLatency + 'ms</td>' +
+      '<td>' + m.totalTokensUsed + '</td></tr>'
+    ).join('');
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const ws = new WebSocket(proto + location.host + '/ws');
+    ws.onopen = () => { $('conn-state').textContent = '已连接'; $('conn-state').className = 'badge ok'; };
+    ws.onclose = () => { $('conn-state').textContent = '已断开，3s 后重连'; $('conn-state').className = 'badge err'; setTimeout(connect, 3000); };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (msg) => {
+      try { handleEvent(JSON.parse(msg.data)); } catch (e) { /* 忽略坏帧 */ }
+    };
+  }
+
+  // 定期拉取模型状态快照（HTTP 端点由插件提供）
+  async function pollStatus() {
+    try {
+      const res = await fetch('/api/model-status');
+      if (res.ok) renderModels(await res.json());
+    } catch (e) { /* 端点未就绪时静默 */ }
+  }
+
+  connect();
+  pollStatus();
+  setInterval(pollStatus, 5000);
+})();
+</script>
+</body>
+</html>

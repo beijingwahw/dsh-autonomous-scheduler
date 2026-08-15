@@ -1,0 +1,23 @@
+{
+  "name": "dsh-autonomous-scheduler",
+  "version": "0.1.0",
+  "description": "自主智能多模型协同调度系统 — 主动感知、自主决策、多模型并行、质量反思自愈、经验沉淀进化",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsdown": "latest",
+    "typescript": "latest"
+  },
+  "dsh": {
+    "plugin": true
+  }
+}

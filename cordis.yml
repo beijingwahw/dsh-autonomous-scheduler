@@ -1,0 +1,74 @@
+- name: dsh-autonomous-scheduler
+  config:
+    strategistModel:
+      id: deepseek-v4-pro
+      endpoint: https://api.deepseek.com
+      apiKey: ${DEEPSEEK_API_KEY}
+    models:
+      - id: deepseek-v4-pro
+        timeout: 90000
+        maxConcurrency: 3
+        costPerKToken: 0.014
+        contextWindow: 128000
+        initialCapabilities:
+          taskScores:
+            code-generation: 0.9
+            architecture: 0.85
+            debugging: 0.85
+            refactoring: 0.8
+      - id: deepseek-v4-flash
+        timeout: 30000
+        maxConcurrency: 5
+        costPerKToken: 0.002
+        contextWindow: 128000
+        initialCapabilities:
+          taskScores:
+            documentation: 0.8
+            test-generation: 0.75
+            general: 0.7
+      - id: gpt-4o
+        endpoint: https://api.openai.com/v1
+        timeout: 60000
+        maxConcurrency: 3
+        costPerKToken: 0.01
+        contextWindow: 128000
+        initialCapabilities:
+          taskScores:
+            code-review: 0.9
+            documentation: 0.85
+            analysis: 0.8
+    sentinel:
+      watchCodeChanges: true
+      watchErrors: true
+      watchPerformance: true
+      aggregationWindow: 5
+    qualityThreshold: 0.7
+    maxRetries: 2
+    globalTimeout: 300000
+    enableProgress: true
+    progressPort: 9877
+    verbose: true
+    experienceStorePath: .scheduler/memory.json
+    encryption:
+      enabled: false
+      algorithm: aes-256-gcm
+      fullFileEncryption: true
+    sync:
+      localNodeId: "node-dev-01"
+      peers: []
+    consensus:
+      enabled: false
+      localNodeId: "node-01"
+      consensusPort: 9880
+      electionTimeoutMin: 1500
+      electionTimeoutMax: 3000
+      heartbeatInterval: 500
+      cluster: []
+    hotReload:
+      enabled: false
+      watchDirs: [src]
+      watchExtensions: [.ts, .tsx, .js]
+      debounceMs: 1000
+      buildCommand: pnpm build
+      autoRollback: true
+    tenants: []
