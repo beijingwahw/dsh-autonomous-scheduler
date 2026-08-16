@@ -48,7 +48,7 @@ import { AutonomyLoop } from './autonomy-loop.js';
 import { WorldModel } from './world-model.js';
 import { CuriosityEngine, type ExplorationProposal } from './curiosity-engine.js';
 import { SafetyGovernor } from './safety-governor.js';
-import { resolveHostLLM, resolveHostModels, resolveHeaderProvider, resolveLocalKeyProvider, describeKeySources } from './dsh-host.js';
+import { resolveHostLLM, resolveHostModels, resolveHeaderProvider, resolveLocalKeyProvider, describeKeySources, KeyHealthManager } from './dsh-host.js';
 
 // ─────────────────────────── 插件配置类型 ───────────────────────────
 
@@ -254,9 +254,10 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
   // 插件本身无需持有任何 API Key（DSH 自动注入用户配置的 Key）。
   const hostChat = resolveHostLLM(ctx);
   const hostModels = resolveHostModels(ctx);
-  // 请求头注入优先级：DSH 宿主 ctx 注入 > 宿主本地密钥自动填入（环境变量/本地配置，支持多密钥轮换）
+  // 请求头注入优先级：DSH 宿主 ctx 注入 > 宿主本地密钥自动填入（环境变量/本地配置，健康感知路由）
   const ctxHeaderProvider = resolveHeaderProvider(ctx);
-  const localKeyProvider = resolveLocalKeyProvider();
+  const keyHealth = new KeyHealthManager();
+  const localKeyProvider = resolveLocalKeyProvider(keyHealth);
   const headerProvider = (modelId: string, keyAttempt = 0) =>
     (keyAttempt === 0 ? ctxHeaderProvider?.(modelId) : undefined) ?? localKeyProvider(modelId, keyAttempt);
   const mergedModels: ModelConfig[] = [...hostModels];
@@ -298,6 +299,7 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
     maxRetries: cfg.maxRetries,
     fetchImpl: cfg.llm?.fetchImpl,
     headerProvider,
+    onKeyOutcome: (modelId, keyAttempt, success, status) => keyHealth.recordOutcome(modelId, keyAttempt, success, status),
     externalChat: hostChat,
   });
   for (const model of mergedModels) llm.registerModel(model);
@@ -890,7 +892,7 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
     name: 'query_memory',
     description: '查询长期记忆库（含蒸馏策略、教训、质量趋势、决策引擎统计）',
     parameters: {
-      query_type: { type: 'string', description: '查询类型', required: true, enum: ['overview', 'patterns', 'model-profile', 'feedback', 'strategies', 'lessons', 'trends', 'decision-stats', 'goals', 'health', 'evolution', 'autonomy-status', 'world-model', 'curiosity', 'governance', 'introspect'] },
+      query_type: { type: 'string', description: '查询类型', required: true, enum: ['overview', 'patterns', 'model-profile', 'feedback', 'strategies', 'lessons', 'trends', 'decision-stats', 'goals', 'health', 'evolution', 'autonomy-status', 'world-model', 'curiosity', 'governance', 'introspect', 'keys'] },
       limit: { type: 'number', description: '返回条数上限，缺省 10' },
       task_type: { type: 'string', description: 'strategies/lessons 按任务类型过滤（可选）' },
     },
@@ -927,6 +929,11 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
           return { summary: curiosity.getSummary(), gaps: curiosity.scanKnowledgeGaps().slice(0, limit) };
         case 'governance':
           return { status: governor.getStatus(), audit: governor.getAudit(limit) };
+        case 'keys':
+          return {
+            health: keyHealth.status(),
+            sources: Object.fromEntries(mergedModels.map((m) => [m.id, describeKeySources(m.id)])),
+          };
         case 'introspect':
           return { introspection: autonomyLoop.introspect() };
         default:

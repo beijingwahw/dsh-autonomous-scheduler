@@ -273,20 +273,114 @@ export function resolveLocalKeyCandidates(modelId: string): Array<{ source: stri
 
 /**
  * 本地密钥提供器：自动从宿主本地来源读取 Key 并填入 Authorization 请求头。
- * keyAttempt 用于故障转移：认证/配额失败时 LLMClient 递增 attempt，
- * 自动切换到下一个候选密钥。密钥只进内存、不落盘、不打印日志。
+ * keyAttempt 用于故障转移：认证/配额失败时 LLMClient 递增 attempt。
+ * 传入 manager 时启用健康感知路由（按健康度选择 + 冷却规避），
+ * 否则退化为顺序轮换。密钥只进内存、不落盘、不打印日志。
  * @returns 按 (modelId, keyAttempt) 返回请求头的函数
  */
-export function resolveLocalKeyProvider(): (modelId: string, keyAttempt?: number) => Record<string, string> | undefined {
+export function resolveLocalKeyProvider(
+  manager?: KeyHealthManager,
+): (modelId: string, keyAttempt?: number) => Record<string, string> | undefined {
   return (modelId, keyAttempt = 0) => {
     const candidates = resolveLocalKeyCandidates(modelId);
     if (candidates.length === 0) return undefined;
-    const pick = candidates[Math.min(keyAttempt, candidates.length - 1)];
-    return { Authorization: `Bearer ${pick.key}` };
+    const pick = manager
+      ? manager.pick(modelId, keyAttempt, candidates)
+      : candidates[Math.min(keyAttempt, candidates.length - 1)];
+    return pick ? { Authorization: `Bearer ${pick.key}` } : undefined;
   };
 }
 
 /** 密钥来源可观测性：返回某模型可用的密钥来源标识（不含密钥值） */
 export function describeKeySources(modelId: string): string[] {
   return resolveLocalKeyCandidates(modelId).map((c) => c.source);
+}
+
+// ─────────────────────────── 密钥健康感知路由 ───────────────────────────
+
+/** 单密钥健康状态（不含密钥值） */
+export interface KeyHealthStatus {
+  source: string;
+  successes: number;
+  failures: number;
+  coolingDown: boolean;
+  cooldownRemainingMs: number;
+  lastErrorStatus?: number;
+}
+
+/**
+ * 密钥健康管理器：把"顺序轮换"升级为"健康感知路由"。
+ * - 选择策略：优先未冷却 → 失败次数少 → 成功次数多；
+ * - 冷却策略：429（配额/限流）冷却 1 分钟，401/403（认证）冷却 5 分钟；
+ * - 成功即清零失败计数并解除冷却；
+ * - 并发安全：按 (modelId, attempt) 记录每次选择，失败结果精确归因到所用密钥。
+ */
+export class KeyHealthManager {
+  private health = new Map<string, KeyHealthStatus & { cooldownUntil: number }>();
+  private lastPicks = new Map<string, string>();
+
+  constructor(private readonly cooldownMs = 60_000) {}
+
+  private entry(source: string): KeyHealthStatus & { cooldownUntil: number } {
+    let e = this.health.get(source);
+    if (!e) {
+      e = { source, successes: 0, failures: 0, coolingDown: false, cooldownRemainingMs: 0, cooldownUntil: 0 };
+      this.health.set(source, e);
+    }
+    return e;
+  }
+
+  /** 为某次调用选择最优候选密钥（attempt>0 时排除上一次刚失败的来源） */
+  pick(
+    modelId: string,
+    attempt: number,
+    candidates: Array<{ source: string; key: string }>,
+  ): { source: string; key: string } | undefined {
+    if (candidates.length === 0) return undefined;
+    const now = Date.now();
+    const prev = attempt > 0 ? this.lastPicks.get(`${modelId}#${attempt - 1}`) : undefined;
+
+    const scored = candidates.map((c) => ({ ...c, h: this.entry(c.source) }));
+    const rank = (x: (typeof scored)[number]) =>
+      (x.h.cooldownUntil <= now ? 0 : 1) * 1000 + x.h.failures - Math.min(x.h.successes, 100) / 1000;
+    const rotated = scored.filter((c) => c.source !== prev);
+    const pool = rotated.length > 0 ? rotated : scored;
+    pool.sort((a, b) => rank(a) - rank(b));
+
+    const chosen = pool[0];
+    this.lastPicks.set(`${modelId}#${attempt}`, chosen.source);
+    return { source: chosen.source, key: chosen.key };
+  }
+
+  /** 上报调用结果：成功清零失败；429/401/403 进入冷却 */
+  recordOutcome(modelId: string, attempt: number, success: boolean, status?: number): void {
+    const source = this.lastPicks.get(`${modelId}#${attempt}`);
+    if (!source) return;
+    const e = this.entry(source);
+    if (success) {
+      e.successes += 1;
+      e.failures = 0;
+      e.cooldownUntil = 0;
+      e.coolingDown = false;
+      e.cooldownRemainingMs = 0;
+      return;
+    }
+    e.failures += 1;
+    e.lastErrorStatus = status;
+    if (status === 429) e.cooldownUntil = Date.now() + this.cooldownMs;
+    else if (status === 401 || status === 403) e.cooldownUntil = Date.now() + this.cooldownMs * 5;
+  }
+
+  /** 全部密钥的健康汇总（供 query_memory 的 keys 查询） */
+  status(): KeyHealthStatus[] {
+    const now = Date.now();
+    return [...this.health.values()].map((e) => ({
+      source: e.source,
+      successes: e.successes,
+      failures: e.failures,
+      coolingDown: e.cooldownUntil > now,
+      cooldownRemainingMs: Math.max(0, e.cooldownUntil - now),
+      lastErrorStatus: e.lastErrorStatus,
+    }));
+  }
 }

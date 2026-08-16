@@ -68,6 +68,8 @@ export interface LLMClientConfig {
    * 注入器可据此轮换到下一个候选密钥。
    */
   headerProvider?: (modelId: string, keyAttempt?: number) => Record<string, string> | undefined;
+  /** 密钥结果回调：每次调用结束后上报成功/失败（含 HTTP 状态码），用于健康感知路由 */
+  onKeyOutcome?: (modelId: string, keyAttempt: number, success: boolean, status?: number) => void;
   /**
    * DSH 宿主 LLM 客户端调用器：存在时所有模型调用委托给宿主客户端
    * （经 ctx 获取的已配置客户端），本客户端仅保留并发控制/统计/重试外壳。
@@ -346,9 +348,16 @@ export class LLMClient {
         response.retries = attempt;
         state.totalTokensUsed += response.tokensUsed;
         state.totalCost += response.cost;
+        this.config.onKeyOutcome?.(state.config.id, keyAttempt, true);
         return response;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        this.config.onKeyOutcome?.(
+          state.config.id,
+          keyAttempt,
+          false,
+          lastError instanceof LLMError ? lastError.status : undefined,
+        );
         // 认证/配额失败且存在多个候选密钥时，轮换密钥重试
         if (err instanceof LLMError && err.status !== undefined && KEY_ROTATABLE_STATUS.has(err.status)) {
           keyAttempt += 1;
