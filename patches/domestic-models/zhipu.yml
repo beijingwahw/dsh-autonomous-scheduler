@@ -1,0 +1,29 @@
+# 智谱 GLM — cordis patch（国产模型）
+# Key 由 DSH 自动注入请求头：在 Web UI 或环境变量 ZHIPU_API_KEY 中配置即可，本文件不含任何密钥。
+# 用法：将本文件内容合并进 cordis.yml，或经 DSH patch 机制加载。
+- name: dsh-autonomous-scheduler
+  config:
+    strategistModel:
+      id: glm-4.5
+      endpoint: https://open.bigmodel.cn/api/paas/v4
+    models:
+      - id: glm-4.5
+        endpoint: https://open.bigmodel.cn/api/paas/v4
+        timeout: 60000
+        maxConcurrency: 3
+        costPerKToken: 0.004
+        contextWindow: 128000
+        initialCapabilities:
+          taskScores:
+            code-generation: 0.8
+            general: 0.8
+            analysis: 0.8
+      - id: glm-4-flash
+        endpoint: https://open.bigmodel.cn/api/paas/v4
+        timeout: 30000
+        maxConcurrency: 8
+        costPerKToken: 0
+        contextWindow: 128000
+        initialCapabilities:
+          taskScores:
+            general: 0.65

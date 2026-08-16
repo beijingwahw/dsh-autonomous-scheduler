@@ -1,0 +1,20 @@
+# 月之暗面 Kimi — cordis patch（国产模型）
+# Key 由 DSH 自动注入请求头：在 Web UI 或环境变量 MOONSHOT_API_KEY 中配置即可，本文件不含任何密钥。
+# 用法：将本文件内容合并进 cordis.yml，或经 DSH patch 机制加载。
+- name: dsh-autonomous-scheduler
+  config:
+    strategistModel:
+      id: moonshot-v1-128k
+      endpoint: https://api.moonshot.cn/v1
+    models:
+      - id: moonshot-v1-128k
+        endpoint: https://api.moonshot.cn/v1
+        timeout: 90000
+        maxConcurrency: 3
+        costPerKToken: 0.008
+        contextWindow: 131072
+        initialCapabilities:
+          taskScores:
+            analysis: 0.85
+            documentation: 0.8
+            general: 0.75

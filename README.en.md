@@ -86,11 +86,10 @@ pnpm build
 
 ## Configuration
 
-Set the environment variable, then register the plugin in `cordis.yml` (minimal example):
+**The plugin itself never holds an API Key.** It obtains the configured LLM client from the ctx context; DSH automatically injects the user-configured Key (from the Web UI or environment variables) into request headers.
 
-```bash
-export DEEPSEEK_API_KEY=sk-xxxx
-```
+- When the host provides an LLM client / model catalog, the plugin uses it directly — no `models` / `strategistModel` / `apiKey` configuration needed;
+- Otherwise, fall back to a domestic-model patch from `patches/domestic-models/` (also key-free):
 
 ```yaml
 - name: dsh-autonomous-scheduler
@@ -98,9 +97,9 @@ export DEEPSEEK_API_KEY=sk-xxxx
     strategistModel:
       id: deepseek-v4-pro
       endpoint: https://api.deepseek.com
-      apiKey: ${DEEPSEEK_API_KEY}
     models:
       - id: deepseek-v4-pro
+        endpoint: https://api.deepseek.com
         timeout: 90000
         maxConcurrency: 3
         costPerKToken: 0.014
@@ -110,6 +109,8 @@ export DEEPSEEK_API_KEY=sk-xxxx
       aggregationWindow: 5
     qualityThreshold: 0.7
 ```
+
+`patches/domestic-models/` contains patches for 9 domestic vendors (DeepSeek / Qwen / Zhipu GLM / Kimi / MiniMax / iFlytek Spark / Tencent Hunyuan / Baidu ERNIE / SenseTime SenseChat) plus a merged `all-domestic.yml`; each vendor's environment variable is documented in the file header. Regenerate with `pnpm generate:patches`.
 
 Full configuration options (encryption / sync / consensus / hot reload / tenants) are documented in [cordis.yml](./cordis.yml).
 

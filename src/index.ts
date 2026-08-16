@@ -48,13 +48,16 @@ import { AutonomyLoop } from './autonomy-loop.js';
 import { WorldModel } from './world-model.js';
 import { CuriosityEngine, type ExplorationProposal } from './curiosity-engine.js';
 import { SafetyGovernor } from './safety-governor.js';
+import { resolveHostLLM, resolveHostModels, resolveHeaderProvider } from './dsh-host.js';
 
 // ─────────────────────────── 插件配置类型 ───────────────────────────
 
 /** 插件配置（对应 cordis.yml config 节） */
 export interface SchedulerConfig {
-  strategistModel: { id: string; endpoint: string; apiKey: string };
-  models: ModelConfig[];
+  /** 可选：DSH 宿主经 ctx 提供模型时无需配置；apiKey 亦可省略（宿主注入请求头） */
+  strategistModel?: { id: string; endpoint: string; apiKey?: string };
+  /** 可选：宿主未提供模型目录时的兜底配置 */
+  models?: ModelConfig[];
   sentinel: {
     watchCodeChanges: boolean;
     watchErrors: boolean;
@@ -245,8 +248,19 @@ export const name = 'dsh-autonomous-scheduler';
  */
 export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
   const cfg = { ...DEFAULT_CONFIG, ...config } as SchedulerConfig;
-  if (!cfg.models || cfg.models.length === 0) {
-    throw new ConfigError('配置缺少 models 列表，至少需要一个可用模型');
+
+  // ── DSH 宿主 LLM 能力解析（宿主优先、配置兜底）──
+  // 宿主经 ctx 提供已配置好的 LLM 客户端 / 模型目录 / 请求头注入器，
+  // 插件本身无需持有任何 API Key（DSH 自动注入用户配置的 Key）。
+  const hostChat = resolveHostLLM(ctx);
+  const hostModels = resolveHostModels(ctx);
+  const headerProvider = resolveHeaderProvider(ctx);
+  const mergedModels: ModelConfig[] = [...hostModels];
+  for (const model of cfg.models ?? []) {
+    if (!mergedModels.some((m) => m.id === model.id)) mergedModels.push(model);
+  }
+  if (!hostChat && mergedModels.length === 0) {
+    throw new ConfigError('无可用模型：DSH 宿主未提供模型目录（ctx），且配置缺少 models 列表');
   }
 
   const logger = ctx.logger('scheduler');
@@ -274,17 +288,22 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
   }
 
   // ── LLM 客户端 ──
+  // 宿主提供客户端时委托调用；否则仅注册端点，Key 由 headerProvider 注入请求头
   const llm = new LLMClient({
     timeout: cfg.llm?.timeout ?? 60_000,
     maxRetries: cfg.maxRetries,
     fetchImpl: cfg.llm?.fetchImpl,
+    headerProvider,
+    externalChat: hostChat,
   });
-  for (const model of cfg.models) llm.registerModel(model);
+  for (const model of mergedModels) llm.registerModel(model);
   // strategist 模型确保已注册（决策调用专用）
   if (cfg.strategistModel && !llm.getModel(cfg.strategistModel.id)) {
     llm.registerModel({ id: cfg.strategistModel.id, endpoint: cfg.strategistModel.endpoint, apiKey: cfg.strategistModel.apiKey });
   }
-  const strategistId = cfg.strategistModel?.id ?? cfg.models[0].id;
+  const strategistId = cfg.strategistModel?.id ?? mergedModels[0]?.id ?? llm.getModelIds()[0];
+  if (hostChat) logger.info('LLM 调用已委托给 DSH 宿主客户端（Key 由宿主注入）');
+  else if (headerProvider) logger.info('模型 Key 由 DSH 宿主经请求头注入');
 
   // ── 能力层 ──
   const tenantManager = new TenantManager(path.join(dataDir, 'tenants'), cryptoEngine ?? undefined);
@@ -825,10 +844,10 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
     memory,
     cryptoEngine: cryptoEngine ?? (new CryptoEngine({ enabled: false, masterKey: 'benchmark-placeholder', algorithm: 'aes-256-gcm', sensitiveFields: [], fullFileEncryption: false })),
     callLLM: (modelId: string, messages: any[]) => llm.chat(modelId, messages),
-    models: cfg.models.map((m) => ({ id: m.id, endpoint: m.endpoint, apiKey: m.apiKey })),
+    models: mergedModels.map((m) => ({ id: m.id, endpoint: m.endpoint, apiKey: m.apiKey ?? '' })),
   });
 
-  logger.info('调度器已启动: %d 个模型, 哨兵窗口 %ss, 进度端口 %s', cfg.models.length, cfg.sentinel?.aggregationWindow ?? 0.5, cfg.enableProgress ? String(cfg.progressPort) : '关闭');
+  logger.info('调度器已启动: %d 个模型, 哨兵窗口 %ss, 进度端口 %s', mergedModels.length, cfg.sentinel?.aggregationWindow ?? 0.5, cfg.enableProgress ? String(cfg.progressPort) : '关闭');
 
   // ─────────────────────────── 12 Tool 注册 ───────────────────────────
 

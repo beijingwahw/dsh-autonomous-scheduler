@@ -30,7 +30,11 @@ export interface ModelConfig {
   name?: string;
   /** API 基地址，如 https://api.deepseek.com（自动补 /v1/chat/completions） */
   endpoint: string;
-  apiKey: string;
+  /**
+   * API Key。可选：当 DSH 宿主经 ctx 注入请求头（headerProvider）时
+   * 无需在配置中携带 Key，宿主会自动把用户配置的 Key 注入请求头。
+   */
+  apiKey?: string;
   /** 单请求超时（毫秒） */
   timeout?: number;
   /** 该模型最大并发请求数 */
@@ -57,6 +61,17 @@ export interface LLMClientConfig {
   maxQueueSize: number;
   /** fetch 实现注入点（测试/自定义运行时） */
   fetchImpl?: typeof fetch;
+  /**
+   * DSH 宿主请求头注入器：返回的头部会合并进每次模型调用
+   * （如 Authorization），使插件无需在配置中持有 API Key。
+   * 可按 modelId 返回不同厂商的 Key 头。
+   */
+  headerProvider?: (modelId: string) => Record<string, string> | undefined;
+  /**
+   * DSH 宿主 LLM 客户端调用器：存在时所有模型调用委托给宿主客户端
+   * （经 ctx 获取的已配置客户端），本客户端仅保留并发控制/统计/重试外壳。
+   */
+  externalChat?: (modelId: string, messages: ChatMessage[], options: ChatOptions) => Promise<LLMResponse>;
 }
 
 /** 单次调用选项 */
@@ -320,7 +335,9 @@ export class LLMClient {
         await sleep(delay);
       }
       try {
-        const response = await this.chatOnce(state, messages, options);
+        const response = this.config.externalChat
+          ? await this.config.externalChat(state.config.id, messages, options)
+          : await this.chatOnce(state, messages, options);
         response.retries = attempt;
         state.totalTokensUsed += response.tokensUsed;
         state.totalCost += response.cost;
@@ -354,12 +371,16 @@ export class LLMClient {
     }
 
     try {
+      // 头部合并顺序：固定头 → 模型自带 Key → 宿主注入头（宿主优先，
+      // 使 DSH 经 ctx 注入的 Key 覆盖本地配置）
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+      const hostHeaders = this.config.headerProvider?.(config.id);
+      if (hostHeaders) Object.assign(headers, hostHeaders);
+
       const res = await this.fetchImpl(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.apiKey}`,
-        },
+        headers,
         body: JSON.stringify({
           model: config.id,
           messages,

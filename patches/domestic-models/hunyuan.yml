@@ -1,0 +1,28 @@
+# 腾讯混元 Hunyuan — cordis patch（国产模型）
+# Key 由 DSH 自动注入请求头：在 Web UI 或环境变量 HUNYUAN_API_KEY 中配置即可，本文件不含任何密钥。
+# 用法：将本文件内容合并进 cordis.yml，或经 DSH patch 机制加载。
+- name: dsh-autonomous-scheduler
+  config:
+    strategistModel:
+      id: hunyuan-pro
+      endpoint: https://api.hunyuan.cloud.tencent.com/v1
+    models:
+      - id: hunyuan-pro
+        endpoint: https://api.hunyuan.cloud.tencent.com/v1
+        timeout: 60000
+        maxConcurrency: 3
+        costPerKToken: 0.01
+        contextWindow: 65536
+        initialCapabilities:
+          taskScores:
+            general: 0.8
+            analysis: 0.8
+      - id: hunyuan-turbo
+        endpoint: https://api.hunyuan.cloud.tencent.com/v1
+        timeout: 30000
+        maxConcurrency: 5
+        costPerKToken: 0.003
+        contextWindow: 32768
+        initialCapabilities:
+          taskScores:
+            general: 0.7
