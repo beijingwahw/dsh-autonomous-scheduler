@@ -9,8 +9,6 @@
 >
 > English | [中文](./README.md)
 
-![Dashboard illustration](./assets/dashboard.jpg)
-
 ## What is Proactive Intelligence?
 
 Traditional schedulers are **reactive**: they respond only when a signal arrives and idle otherwise. On top of the "perceive → decide → execute → reflect → consolidate" loop, this plugin adds an autonomy layer so the system:
@@ -20,19 +18,7 @@ Traditional schedulers are **reactive**: they respond only when a signal arrives
 - **Anticipating future load**, actively predicts signal arrival trends and reserves capacity ahead of time
 - **On anomalies**, actively trips circuit breakers, rate-limits, and degrades — instead of waiting to crash
 
-```mermaid
-graph LR
-  S[Sentinel<br/>Perception] --> D[Decision Engine<br/>Strategic Decisions]
-  D --> E[Executor<br/>Parallel Execution]
-  E --> R[Reflection Engine<br/>Quality Review]
-  R --> M[Long-term Memory<br/>Consolidation]
-  M -->|Experience Retrieval| D
-  R -->|Insights| L[Autonomy Loop<br/>Goals / Meta-cognition / Evolution]
-  L -->|Generated Goals| D
-  L --> P[Three Pillars<br/>World Model · Curiosity · Safety Governor]
-  P ~~~ PAD["　　　　　　　　"]
-  style PAD fill:none,stroke:none,color:transparent
-```
+![Architecture Overview](./assets/arch-en.png)
 
 ## Core Features
 

@@ -19,19 +19,7 @@
 - **面对未来负载**，主动预测信号到达趋势，提前预留容量
 - **出现异常时**，主动熔断、限流、降级，而不是等到崩溃
 
-```mermaid
-graph LR
-  S[Sentinel<br/>信号感知] --> D[决策引擎<br/>战略决策]
-  D --> E[Executor<br/>并行执行]
-  E --> R[反思引擎<br/>质量反思]
-  R --> M[长期记忆<br/>经验沉淀]
-  M -->|经验检索| D
-  R -->|洞察| L[自主循环<br/>目标/元认知/进化]
-  L -->|生成目标| D
-  L --> P[三支柱<br/>世界模型·好奇心·安全治理]
-  P ~~~ PAD["　　　　　　　　"]
-  style PAD fill:none,stroke:none,color:transparent
-```
+![架构总览](./assets/arch-zh.png)
 
 ## 核心特性
 
