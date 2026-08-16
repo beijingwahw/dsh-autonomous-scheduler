@@ -21,8 +21,10 @@
  * - 评审模型可注入，冒烟测试可离线模拟
  */
 
-import type { NodeResult, PlanExecutionResult, ExecutionPlan } from './executor.js';
+import type { NodeResult, PlanExecutionResult, ExecutionPlan } from './types.js';
 import type { Signal } from './sentinel.js';
+import { decayFactor } from './core/evidence.js';
+import type { CausalKernel } from './core/causal-kernel.js';
 
 /** 评审模型签名（可注入） */
 export type JudgeModel = (params: {
@@ -58,6 +60,31 @@ export interface Lesson {
   lesson: string;
   suggestion: string;
   signalDescription: string;
+  /** 5.0：反事实教训（失败 → 「若选 B」的因果估计） */
+  counterfactual?: CounterfactualInsight;
+}
+
+/**
+ * 5.0：反事实洞察 ——「若当时选 B」的因果区间估计。
+ *
+ * 质变点：传统教训只回答「为什么失败」（归因过去）；
+ * 反事实教训回答「怎样会成功」（指导未来的反事实推理）。
+ */
+export interface CounterfactualInsight {
+  /** 实际采用的模型 */
+  actualModel: string;
+  /** 反事实最优替代 */
+  bestAlternative: string;
+  /** 替代模型的估计成功概率（因果口径，非相关） */
+  estimatedProb: number;
+  /** 区间下界 */
+  lower: number;
+  /** 区间上界 */
+  upper: number;
+  /** 可读结论 */
+  verdict: string;
+  /** 证据样本量（不足时建议先做实验而非直接切换） */
+  evidenceSamples: number;
 }
 
 /** 质量趋势记录 */
@@ -66,6 +93,21 @@ export interface QualityTrendPoint {
   taskType: string;
   avgQuality: number;
   success: boolean;
+}
+
+/** 质量趋势摘要（按任务类型聚合） */
+export interface TrendSummary {
+  threshold: number;
+  windowSize: number;
+  byType: Record<
+    string,
+    {
+      samples: number;
+      avgQuality: number;
+      successRate: number;
+      trending: 'rising' | 'falling' | 'stable';
+    }
+  >;
 }
 
 /** 反思引擎配置 */
@@ -122,13 +164,15 @@ export class ReflectionEngine {
   private config: ReflectionEngineConfig;
   private lessons: Lesson[] = [];
   private trendWindow: QualityTrendPoint[] = [];
-  /** 各任务类型的质量历史（用于自校准） */
-  private qualityHistory = new Map<string, number[]>();
+  /** 各任务类型的质量历史（用于自校准；带时间戳支持衰减均值） */
+  private qualityHistory = new Map<string, Array<{ quality: number; at: number }>>();
   /** 当前动态阈值 */
   private currentThreshold: number;
   /** 告警回调（由 index.ts 桥接到进度广播） */
   private onAlert?: (alert: { type: string; message: string; taskType: string }) => void;
   private lessonCounter = 0;
+  /** 5.0：因果内核（挂载后失败反思自动触发反事实分析） */
+  private causal?: CausalKernel;
 
   constructor(config?: Partial<ReflectionEngineConfig>) {
     this.config = { ...DEFAULT_REFLECTION_CONFIG, ...config };
@@ -138,6 +182,51 @@ export class ReflectionEngine {
   /** 设置告警回调 */
   setAlertHandler(handler: (alert: { type: string; message: string; taskType: string }) => void): void {
     this.onAlert = handler;
+  }
+
+  /** 5.0：挂载因果内核（幂等） */
+  attachCausalKernel(kernel: CausalKernel): void {
+    this.causal = kernel;
+  }
+
+  /**
+   * 5.0：反事实分析 —— 失败后的「若选 B」推理。
+   *
+   * 对每个候选替代模型查询因果内核：do(use:B) → task.outcome 的
+   * 后验成功概率（黄金口径：仅干预证据 ≥ 3 时采信，观测证据降权），
+   * 返回最优替代与可读结论。
+   *
+   * 质变点：教训从「A 超时了」升级为「A 超时了；若当时用 B，
+   * 成功概率 0.78 [0.62, 0.91]（12 次干预证据）」——
+   * 下次调度的切换决策第一次有了反事实依据。
+   *
+   * @param outcomeNode 因果图的结果节点（默认 'task.outcome'）
+   */
+  reflectCounterfactual(params: {
+    failedModelId: string;
+    alternativeModelIds: string[];
+    actualSuccess: boolean;
+    outcomeNode?: string;
+  }): CounterfactualInsight | null {
+    if (!this.causal || params.alternativeModelIds.length === 0) return null;
+    const outcome = params.outcomeNode ?? 'task.outcome';
+    let best: CounterfactualInsight | null = null;
+    for (const alt of params.alternativeModelIds) {
+      if (alt === params.failedModelId) continue;
+      const cf = this.causal.counterfactual(outcome, params.failedModelId, alt, params.actualSuccess);
+      if (!best || cf.estimatedProb > best.estimatedProb) {
+        best = {
+          actualModel: params.failedModelId,
+          bestAlternative: alt,
+          estimatedProb: cf.estimatedProb,
+          lower: cf.lower,
+          upper: cf.upper,
+          verdict: cf.verdict,
+          evidenceSamples: cf.evidenceSamples,
+        };
+      }
+    }
+    return best;
   }
 
   /**
@@ -255,6 +344,28 @@ export class ReflectionEngine {
       suggestion,
       signalDescription: params.signal.description,
     };
+
+    // 5.0：反事实反思 —— 失败不仅归因，还要推理「若选 B」。
+    // 教训携带因果区间估计回流优化器：根因是 model-capability 且
+    // 替代证据充分时，suggestion 升级为带概率的定向切换指令。
+    if (this.causal && rootCause === 'model-capability') {
+      const modelsOnPlan = [...new Set(params.result.nodeResults.map((r) => r.modelId).filter(Boolean))];
+      const alternatives = modelsOnPlan.filter((m) => m && m !== failed.modelId);
+      const cf = this.reflectCounterfactual({
+        failedModelId: failed.modelId ?? '',
+        alternativeModelIds: alternatives,
+        actualSuccess: false,
+      });
+      if (cf) {
+        record.counterfactual = cf;
+        if (cf.evidenceSamples >= 4 && cf.estimatedProb >= 0.6) {
+          record.suggestion = `反事实证据：切换到 ${cf.bestAlternative}（估计成功概率 ${cf.estimatedProb.toFixed(2)}，区间 [${cf.lower.toFixed(2)}, ${cf.upper.toFixed(2)}]，${cf.evidenceSamples} 证据样本）`;
+        } else {
+          record.suggestion = `${record.suggestion}；反事实证据不足（${cf.evidenceSamples} 样本），建议对 ${cf.bestAlternative} 安排因果实验`;
+        }
+      }
+    }
+
     this.lessons.push(record);
     if (this.lessons.length > 100) this.lessons.shift();
     return record;
@@ -271,7 +382,7 @@ export class ReflectionEngine {
     if (this.trendWindow.length > this.config.trendWindowSize) this.trendWindow.shift();
 
     const history = this.qualityHistory.get(taskType) ?? [];
-    history.push(quality);
+    history.push({ quality, at: Date.now() });
     if (history.length > 50) history.shift();
     this.qualityHistory.set(taskType, history);
 
@@ -300,15 +411,42 @@ export class ReflectionEngine {
     return [...this.lessons];
   }
 
+  /**
+   * 直接追加一条结构化教训（轻量入口，无需完整 PlanExecutionResult）。
+   * 供宿主融合层等外部观测面在宿主工具连续失败时沉淀经验。
+   * @param params 教训字段（id / timestamp 自动补齐）
+   * @returns 追加的 Lesson
+   */
+  addLesson(params: {
+    taskType: string;
+    rootCause: RootCauseCategory;
+    lesson: string;
+    suggestion: string;
+    signalDescription: string;
+  }): Lesson {
+    const record: Lesson = {
+      id: `lesson-${++this.lessonCounter}`,
+      timestamp: Date.now(),
+      taskType: params.taskType,
+      rootCause: params.rootCause,
+      lesson: params.lesson,
+      suggestion: params.suggestion,
+      signalDescription: params.signalDescription,
+    };
+    this.lessons.push(record);
+    if (this.lessons.length > 100) this.lessons.shift();
+    return record;
+  }
+
   /** 质量趋势摘要 */
-  getTrendSummary(): any {
+  getTrendSummary(): TrendSummary {
     const byType = new Map<string, QualityTrendPoint[]>();
     for (const point of this.trendWindow) {
       const list = byType.get(point.taskType) ?? [];
       list.push(point);
       byType.set(point.taskType, list);
     }
-    const summary: Record<string, any> = {};
+    const summary: TrendSummary['byType'] = {};
     for (const [type, points] of byType) {
       const qualities = points.map((p) => p.avgQuality);
       summary[type] = {
@@ -335,9 +473,9 @@ export class ReflectionEngine {
   }
 
   /** 质量下滑告警检测 */
-  private checkDeclineAlert(taskType: string, history: number[]): void {
+  private checkDeclineAlert(taskType: string, history: Array<{ quality: number; at: number }>): void {
     if (history.length < this.config.declineAlertCount + 1) return;
-    const recent = history.slice(-this.config.declineAlertCount);
+    const recent = history.slice(-this.config.declineAlertCount).map((h) => h.quality);
     let declining = true;
     for (let i = 1; i < recent.length; i += 1) {
       if (recent[i] >= recent[i - 1]) {
@@ -354,10 +492,24 @@ export class ReflectionEngine {
     }
   }
 
-  /** 阈值自校准：质量分布整体偏高 → 收紧；偏低 → 放宽 */
-  private calibrateThreshold(taskType: string, history: number[]): void {
+  /**
+   * 阈值自校准（4.0 证据化：时间衰减均值）
+   *
+   * 校准基准从裸算术均值升级为半衰期 30 天的时间加权均值——旧的
+   * 质量分布（模型更强/更弱时期）自然让位，阈值始终锚定「当前能力」：
+   * 分布整体偏高 → 收紧；偏低 → 放宽。
+   */
+  private calibrateThreshold(taskType: string, history: Array<{ quality: number; at: number }>): void {
     if (history.length < this.config.calibrationMinSamples) return;
-    const avg = history.reduce((a, b) => a + b, 0) / history.length;
+    const now = Date.now();
+    let weighted = 0;
+    let totalWeight = 0;
+    for (const point of history) {
+      const weight = decayFactor(Math.max(0, now - point.at));
+      weighted += point.quality * weight;
+      totalWeight += weight;
+    }
+    const avg = totalWeight > 0 ? weighted / totalWeight : 0.5;
     const [min, max] = this.config.thresholdRange;
 
     if (avg > this.currentThreshold + 0.15) {

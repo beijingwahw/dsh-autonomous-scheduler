@@ -27,8 +27,32 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { NetworkError } from '../errors.js';
-import type { LongTermMemory } from '../memory/long-term-memory.js';
+import type { LongTermMemory, TaskPatternMemory, ModelLongTermProfile, DecisionFeedback, MemoryStore } from '../memory/long-term-memory.js';
 import type { CryptoEngine } from '../security/crypto-engine.js';
+
+/**
+ * 变更载荷联合类型（按 ChangeEntry.type 判别）：
+ * - pattern-created / pattern-updated：完整模式，或反思器产出的轻量变更描述
+ * - model-profile-updated：模型画像
+ * - feedback-created：决策反馈
+ * - stats-updated：全局统计增量
+ * - pattern-deleted：无载荷（null）
+ */
+export type ChangePayload =
+  | TaskPatternMemory
+  | ModelLongTermProfile
+  | DecisionFeedback
+  | MemoryStore['globalStats']
+  | { taskType: string; complexity: number; outcome: 'success' | 'failure' }
+  | null;
+
+/** 同步 HTTP 响应（push/pull 端点统一结构） */
+interface SyncHttpResponse {
+  ok?: boolean;
+  error?: string;
+  batch?: SyncBatch;
+  [key: string]: unknown;
+}
 
 /** 同步节点配置 */
 export interface SyncNodeConfig {
@@ -57,7 +81,7 @@ export interface ChangeEntry {
   fingerprint: string;
   timestamp: number;
   sourceNodeId: string;
-  payload: any;
+  payload: ChangePayload;
   logicalClock: number;
   dataHash: string;
 }
@@ -76,8 +100,8 @@ export interface SyncBatch {
 export interface SyncConflict {
   changeId: string;
   fingerprint: string;
-  localData: any;
-  remoteData: any;
+  localData: TaskPatternMemory;
+  remoteData: ChangePayload;
   localClock: number;
   remoteClock: number;
   resolution: 'local-wins' | 'remote-wins' | 'merged' | 'pending';
@@ -107,6 +131,8 @@ export interface SyncState {
   unresolvedConflicts: SyncConflict[];
   syncLog: SyncLogEntry[];
   lastSyncAt: Record<string, number>;
+  /** 已应用变更 id（有界 FIFO；跨重启幂等去重的持久化载体） */
+  appliedIds?: string[];
 }
 
 /** 同步引擎配置 */
@@ -117,6 +143,8 @@ interface DistributedSyncOptions {
   appliedSetLimit?: number;
   /** 同步日志保留条数 */
   syncLogLimit?: number;
+  /** 待推送变更总字节上限（防单条大 payload 撑爆内存），默认 16 MB */
+  maxPendingBytes?: number;
 }
 
 /** 已应用变更集合上限 */
@@ -125,6 +153,8 @@ const DEFAULT_APPLIED_LIMIT = 10_000;
 const DEFAULT_LOG_LIMIT = 200;
 /** 待推送变更上限（防止 peer 长期离线导致无限堆积） */
 const MAX_PENDING_CHANGES = 5_000;
+/** 待推送变更默认字节上限（条数之外的第二道闸：单条大 payload 场景） */
+const DEFAULT_MAX_PENDING_BYTES = 16 * 1024 * 1024;
 
 /**
  * 分布式记忆同步引擎
@@ -143,6 +173,11 @@ export class DistributedSync {
   private pollTimers = new Map<string, ReturnType<typeof setInterval>>();
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private options: Required<DistributedSyncOptions>;
+  /** 各指纹最近一次本地变更时间戳（并发冲突仲裁的第二级依据） */
+  private lastLocalChangeAt = new Map<string, number>();
+  /** 待推送队列总字节数（含每条变更近似大小缓存） */
+  private pendingBytes = new Map<string, number>();
+  private totalPendingBytes = 0;
 
   /**
    * @param localNodeId 本节点 id
@@ -159,8 +194,21 @@ export class DistributedSync {
       statePersistInterval: 2000,
       appliedSetLimit: DEFAULT_APPLIED_LIMIT,
       syncLogLimit: DEFAULT_LOG_LIMIT,
+      maxPendingBytes: DEFAULT_MAX_PENDING_BYTES,
     };
     this.state = this.loadState();
+    // 幂等集合跨重启恢复：原实现仅驻内存——重启后重投批次（peer 重推 /
+    // inbox 未清理的文件）会被再次应用，feedback/stats 双重累加，
+    // 「已应用的 changeId 集合持久化，重复批次安全跳过」的承诺落空
+    if (Array.isArray(this.state.appliedIds)) {
+      this.appliedIds = new Set(this.state.appliedIds.slice(-this.options.appliedSetLimit));
+    }
+    // 恢复待推队列字节计量（大小是载荷的派生量，无需持久化）
+    for (const c of this.state.pendingChanges) {
+      const size = this.approxSizeOf(c);
+      this.pendingBytes.set(c.id, size);
+      this.totalPendingBytes += size;
+    }
   }
 
   /**
@@ -169,7 +217,7 @@ export class DistributedSync {
    * @param fingerprint 变更对象指纹（pattern 指纹 / 模型 id / 反馈 id）
    * @param payload 变更载荷
    */
-  recordChange(type: ChangeEntry['type'], fingerprint: string, payload: any): void {
+  recordChange(type: ChangeEntry['type'], fingerprint: string, payload: ChangePayload): void {
     this.state.localClock += 1;
     const entry: ChangeEntry = {
       id: `${this.localNodeId}:${this.state.localClock}:${crypto.randomBytes(4).toString('hex')}`,
@@ -181,10 +229,25 @@ export class DistributedSync {
       logicalClock: this.state.localClock,
       dataHash: this.hashPayload(payload),
     };
+    // 指纹级本地变更时间：并发冲突仲裁第二级（本地侧）真实依据
+    this.lastLocalChangeAt.set(fingerprint, entry.timestamp);
     this.state.pendingChanges.push(entry);
-    // 防止 peer 长期离线导致无限堆积
-    if (this.state.pendingChanges.length > MAX_PENDING_CHANGES) {
-      this.state.pendingChanges = this.state.pendingChanges.slice(-MAX_PENDING_CHANGES);
+    const size = this.approxSizeOf(entry);
+    this.pendingBytes.set(entry.id, size);
+    this.totalPendingBytes += size;
+    // 双闸淘汰：条数上限 + 字节上限（后者防单条大 payload——完整模式
+    // 载荷可达数十 KB，条数闸下 5000 条足以撑出数百 MB 常驻内存）
+    while (
+      this.state.pendingChanges.length > MAX_PENDING_CHANGES ||
+      (this.totalPendingBytes > this.options.maxPendingBytes && this.state.pendingChanges.length > 1)
+    ) {
+      const evicted = this.state.pendingChanges.shift();
+      if (!evicted) break;
+      const sz = this.pendingBytes.get(evicted.id);
+      if (sz !== undefined) {
+        this.totalPendingBytes -= sz;
+        this.pendingBytes.delete(evicted.id);
+      }
     }
     this.schedulePersist();
   }
@@ -204,10 +267,20 @@ export class DistributedSync {
    */
   acknowledgePeer(peerId: string, clock: number): void {
     this.state.peerClocks[peerId] = Math.max(this.state.peerClocks[peerId] ?? 0, clock);
-    // 所有 peer 都已确认的变更可安全裁剪
+    // 所有 peer 都已确认的变更可安全裁剪（同步回收字节计量）
     const minConfirmed = Math.min(...Object.values(this.state.peerClocks));
     if (Object.keys(this.state.peerClocks).length > 0 && Number.isFinite(minConfirmed)) {
+      const before = this.state.pendingChanges.length;
       this.state.pendingChanges = this.state.pendingChanges.filter((c) => c.logicalClock > minConfirmed);
+      if (this.state.pendingChanges.length !== before) {
+        this.pendingBytes.clear();
+        this.totalPendingBytes = 0;
+        for (const c of this.state.pendingChanges) {
+          const size = this.approxSizeOf(c);
+          this.pendingBytes.set(c.id, size);
+          this.totalPendingBytes += size;
+        }
+      }
     }
     this.schedulePersist();
   }
@@ -291,28 +364,48 @@ export class DistributedSync {
    * - handlePull: GET 返回本地增量批次（?peerId=xxx&since=clock）
    * - handleStatus: GET 返回同步状态摘要
    */
-  createSyncHandlers(): { handlePush: Function; handlePull: Function; handleStatus: Function } {
+  createSyncHandlers(): {
+    handlePush: (body: unknown) => Promise<Record<string, unknown>>;
+    handlePull: (query: { peerId?: string }) => { ok: boolean; batch: SyncBatch | null };
+    handleAck: (body: { peerId?: string; clock?: number }) => Record<string, unknown>;
+    handleStatus: () => Record<string, unknown>;
+  } {
     return {
-      handlePush: async (body: any) => {
+      handlePush: async (body: unknown) => {
         const batch = body as SyncBatch;
         if (!batch || !Array.isArray(batch.changes)) {
           return { ok: false, error: '非法批次结构' };
         }
         const result = await this.receiveBatch(batch);
-        // 推送方进度确认
-        this.acknowledgePeer(batch.sourceNodeId, batch.logicalClock);
+        // 注意：此处不可 acknowledgePeer——推送方消费的是「它自己的时钟域」，
+        // 而 peerClocks 记录的是「对方已消费我的变更到我的时钟几」。原实现
+        // 把 sender 的 logicalClock 记进我的 peerClocks，之后 createBatch 给
+        // 该 peer 的增量会错误跳过一批它从未收到的本地变更（永久丢失）
         return { ok: result.errors.length === 0, ...result };
       },
       handlePull: (query: { peerId?: string }) => {
         const peerId = query.peerId ?? 'unknown';
         const batch = this.createBatch(peerId);
+        // 交付语义修复：此处不再立即确认进度——批次在拉取方应用失败
+        // （传输中断 / 应用异常）时，提前确认会让该批变更永久漏推；
+        // 改由拉取方应用成功后显式回执 handleAck（至少一次交付 +
+        // 幂等应用 = 恰好一次效果）
         return { ok: true, batch };
+      },
+      handleAck: (body: { peerId?: string; clock?: number }) => {
+        // 拉取方应用成功的显式回执：此刻确认「对方已消费我的时钟域到此」
+        if (!body.peerId || typeof body.clock !== 'number' || !Number.isFinite(body.clock)) {
+          return { ok: false, error: '非法回执：需要 peerId 与数字 clock' };
+        }
+        this.acknowledgePeer(body.peerId, body.clock);
+        return { ok: true };
       },
       handleStatus: () => ({
         ok: true,
         nodeId: this.localNodeId,
         localClock: this.state.localClock,
         pendingChanges: this.state.pendingChanges.length,
+        pendingBytes: this.totalPendingBytes,
         peers: Object.keys(this.state.peerClocks),
         unresolvedConflicts: this.state.unresolvedConflicts.length,
       }),
@@ -382,7 +475,17 @@ export class DistributedSync {
   /**
    * 获取同步状态摘要（供 manage_sync status 使用）
    */
-  getStatus(): any {
+  /** 同步状态摘要（运维可观测） */
+  getStatus(): {
+    localNodeId: string;
+    localClock: number;
+    registeredNodes: Array<{ nodeId: string; name: string; protocol: SyncNodeConfig['protocol']; enabled: boolean }>;
+    peerClocks: Record<string, number>;
+    pendingChanges: number;
+    unresolvedConflicts: number;
+    recentSyncs: SyncLogEntry[];
+    lastSyncAt: Record<string, number>;
+  } {
     return {
       localNodeId: this.localNodeId,
       localClock: this.state.localClock,
@@ -410,11 +513,14 @@ export class DistributedSync {
     switch (change.type) {
       case 'pattern-created':
       case 'pattern-updated': {
+        // 边界收窄：模式类变更载荷应为完整模式（轻量变更描述仅用于同步登记，不参与 upsert）
+        const pattern = change.payload as TaskPatternMemory;
         const local = this.memory.getAllTaskPatterns().find((p) => p.fingerprint === change.fingerprint);
         if (local && change.type === 'pattern-updated') {
           // 并发修改冲突：三级仲裁 (clock, timestamp, nodeId)
           const localClock = this.state.localClock;
-          const remoteWins = this.arbitrate(localClock, change.logicalClock, change.timestamp);
+          const localTs = this.lastLocalChangeAt.get(change.fingerprint) ?? 0;
+          const remoteWins = this.arbitrate(localClock, change.logicalClock, change.timestamp, localTs, change.sourceNodeId);
           const conflict: SyncConflict = {
             changeId: change.id,
             fingerprint: change.fingerprint,
@@ -430,35 +536,47 @@ export class DistributedSync {
           };
           this.state.unresolvedConflicts.push(conflict);
           if (remoteWins) {
-            this.memory.upsertPattern(change.payload);
+            this.memory.upsertPattern(pattern);
           }
           return conflict;
         }
-        this.memory.upsertPattern(change.payload);
+        this.memory.upsertPattern(pattern);
         return null;
       }
       case 'pattern-deleted':
         this.memory.removePattern(change.fingerprint);
         return null;
       case 'model-profile-updated':
-        this.memory.upsertModelProfile(change.payload);
+        this.memory.upsertModelProfile(change.payload as ModelLongTermProfile);
         return null;
       case 'feedback-created':
-        this.memory.appendFeedback(change.payload);
+        this.memory.appendFeedback(change.payload as DecisionFeedback);
         return null;
       case 'stats-updated':
-        this.memory.mergeGlobalStats(change.payload);
+        this.memory.mergeGlobalStats(change.payload as MemoryStore['globalStats']);
         return null;
       default:
         return null;
     }
   }
 
-  /** 三级仲裁：clock 高者胜 → timestamp 新者胜 → nodeId 字典序大者胜 */
-  private arbitrate(localClock: number, remoteClock: number, remoteTimestamp: number): boolean {
+  /**
+   * 三级仲裁：clock 高者胜 → timestamp 新者胜 → nodeId 字典序大者胜。
+   * 第二级原实现用 Date.now() 近似本地变更时间——墙钟在「应用远端批次」
+   * 的当下必然新于远端时间戳，等价于「时钟同段时远端恒胜」，仲裁退化为
+   * 单级；现改用指纹级真实本地变更时间（recordChange 时记录）。
+   * 第三级 nodeId 决胜保证双方独立仲裁结果一致（无分歧收敛）
+   */
+  private arbitrate(
+    localClock: number,
+    remoteClock: number,
+    remoteTimestamp: number,
+    localTimestamp: number,
+    remoteNodeId: string,
+  ): boolean {
     if (remoteClock !== localClock) return remoteClock > localClock;
-    // 时钟相同比较时间戳（本地最近变更时间用当前时间近似）
-    return remoteTimestamp >= Date.now() - 1000;
+    if (remoteTimestamp !== localTimestamp) return remoteTimestamp > localTimestamp;
+    return remoteNodeId > this.localNodeId;
   }
 
   /** http-poll 协议同步：先 push 本地增量，再 pull 远端增量 */
@@ -492,7 +610,20 @@ export class DistributedSync {
         log.conflictsDetected = received.conflicts.length;
         log.conflictsResolved = received.conflicts.filter((c) => c.resolution !== 'pending').length;
         log.errors.push(...received.errors);
-        this.acknowledgePeer(pullResult.batch.sourceNodeId, pullResult.batch.logicalClock);
+        // 拉回的是对方时钟域的增量：我消费它≠它消费我，不可记入
+        // 我对它的 peerClocks（时钟域混记会让后续推送静默跳变更）。
+        // 应用干净后显式回执对方的进度确认端点；有错误则不回执——
+        // 对方重投整批，已应用部分由 appliedIds 幂等跳过
+        if (received.errors.length === 0) {
+          await this.httpRequest(
+            `${baseUrl}/sync/ack`,
+            'POST',
+            { peerId: this.localNodeId, clock: pullResult.batch.logicalClock },
+            node.authToken,
+          ).catch(() => {
+            /* 回执失败：对方保持未确认，下轮重投（幂等安全） */
+          });
+        }
       }
     }
   }
@@ -526,10 +657,19 @@ export class DistributedSync {
           log.conflictsDetected += received.conflicts.length;
           log.conflictsResolved += received.conflicts.filter((c) => c.resolution !== 'pending').length;
           log.errors.push(...received.errors);
-          this.acknowledgePeer(batch.sourceNodeId, batch.logicalClock);
-          fs.rmSync(filePath);
+          // 同上：对方时钟域的进度不可混记进 peerClocks（我的域）。
+          // 应用干净才删文件；有错误保留待下轮重试（至少一次交付，
+          // 已应用部分由 appliedIds 幂等跳过）——原实现无条件删除，
+          // 部分应用失败即静默丢批
+          if (received.errors.length === 0) {
+            fs.rmSync(filePath);
+          } else {
+            log.errors.push(`批次 ${file} 部分应用失败，保留待重试`);
+          }
         } catch (err) {
-          log.errors.push(`批次文件处理失败 ${file}: ${err instanceof Error ? err.message : String(err)}`);
+          // 解析/读取异常：保留批次文件待下轮重试——原实现无条件删除，
+          // 处理中途异常即静默丢批
+          log.errors.push(`批次文件处理失败 ${file}（保留待重试）: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
@@ -548,7 +688,7 @@ export class DistributedSync {
   }
 
   /** 简易 HTTP 请求（走环境代理，JSON 载荷） */
-  private httpRequest(url: string, method: 'GET' | 'POST', body?: any, authToken?: string): Promise<any> {
+  private httpRequest(url: string, method: 'GET' | 'POST', body?: unknown, authToken?: string): Promise<SyncHttpResponse> {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const payload = body !== undefined ? JSON.stringify(body) : undefined;
@@ -599,10 +739,18 @@ export class DistributedSync {
   }
 
   /** 载荷哈希 */
-  private hashPayload(payload: any): string {
+  private hashPayload(payload: ChangePayload): string {
     return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   }
 
+  /** 变更条目近似字节数（载荷序列化长度 + 条目固定开销） */
+  private approxSizeOf(entry: ChangeEntry): number {
+    try {
+      return JSON.stringify(entry.payload).length + 256;
+    } catch {
+      return 4096; // 序列化异常（循环引用等）按保守值计
+    }
+  }
   /** 已应用集合 FIFO 淘汰 */
   private trimAppliedIds(): void {
     if (this.appliedIds.size <= this.options.appliedSetLimit) return;
@@ -660,6 +808,8 @@ export class DistributedSync {
   /** 执行状态持久化 */
   private persistState(): void {
     try {
+      // 幂等集合随状态落盘（有界，FIFO 截断与内存淘汰口径一致）
+      this.state.appliedIds = [...this.appliedIds].slice(-this.options.appliedSetLimit);
       if (this.cryptoEngine) {
         this.cryptoEngine.writeEncrypted(this.statePath, this.state);
         return;

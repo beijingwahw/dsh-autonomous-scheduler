@@ -77,6 +77,17 @@ export type HotReloadEvent =
   | { type: 'graceful-shutdown-started'; version: string; activeTasks: number; timestamp: number }
   | { type: 'graceful-shutdown-completed'; version: string; timestamp: number };
 
+/** 热重载状态（运维可观测） */
+export interface HotReloadStatus {
+  enabled: boolean;
+  watching: boolean;
+  deploying: boolean;
+  activeVersion: string | null;
+  activeTaskCount: number;
+  versionCount: number;
+  recentVersions: Array<{ version: string; status: string; deployedAt: number; source: string }>;
+}
+
 /**
  * 插件热更新引擎
  *
@@ -236,7 +247,7 @@ export class HotReloadEngine extends EventEmitter {
   /**
    * 引擎状态摘要（供 manage_hot_reload status 使用）
    */
-  getStatus(): any {
+  getStatus(): HotReloadStatus {
     const active = this.getActiveVersion();
     return {
       enabled: this.config.enabled,

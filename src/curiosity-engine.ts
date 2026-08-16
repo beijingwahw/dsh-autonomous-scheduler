@@ -53,6 +53,28 @@ export interface ExplorationRecord {
   note?: string;
 }
 
+/**
+ * 5.0：因果实验记录（假设驱动好奇心的科学循环）
+ *
+ * 与普通探索记录的本质区别：每次因果实验都有先验假设（可证伪）、
+ * 干预动作（do 而非看）与图更新（贝叶斯后验收缩）——
+ * 即使结果否定假设（证伪），区间收窄本身就是知识增量。
+ */
+export interface CausalExplorationRecord {
+  from: string;
+  to: string;
+  hypothesis: string;
+  setTo: boolean;
+  observedY: boolean;
+  timestamp: number;
+  /** 实验前效应区间宽度 */
+  uncertaintyBefore: number;
+  /** 实验后效应区间宽度（应小于 before —— 后验收缩） */
+  uncertaintyAfter: number;
+  /** 假设是否被支持 */
+  hypothesisSupported: boolean;
+}
+
 /** 好奇心引擎配置 */
 export interface CuriosityEngineConfig {
   /** 探索预算占单轮心跳派发的最大比例 0~1 */
@@ -101,10 +123,117 @@ export class CuriosityEngine {
   private explorations: ExplorationRecord[] = [];
   /** 各类型历史探索次数 */
   private explorationCounts = new Map<string, number>();
+  /** 5.0：因果内核（挂载后好奇心升级为假设驱动的实验设计） */
+  private causal?: import('./core/causal-kernel.js').CausalKernel;
+  /** 10.0：科学家内核（挂载后实验建议升级为 Lindley EIG 最优设计） */
+  private scientist?: import('./core/scientist.js').ScientistMind;
+  /** 5.0：因果实验历史 */
+  private causalExplorations: CausalExplorationRecord[] = [];
 
   constructor(provider: KnowledgeProvider, config?: Partial<CuriosityEngineConfig>) {
     this.provider = provider;
     this.config = { ...DEFAULT_CURIOSITY_CONFIG, ...config };
+  }
+
+  /** 5.0：挂载因果内核（幂等） */
+  attachCausalKernel(kernel: import('./core/causal-kernel.js').CausalKernel): void {
+    this.causal = kernel;
+  }
+
+  /** 10.0：挂载科学家内核（幂等）——实验建议升级为 EIG 最优设计 */
+  attachScientistMind(mind: import('./core/scientist.js').ScientistMind): void {
+    this.scientist = mind;
+  }
+
+  /**
+   * 5.0：假设驱动实验设计 —— 好奇心的科学化。
+   *
+   * 质变点：旧版好奇心是「类型盲区扫描」（没做过什么就做什么）——
+   * 探索目标由接触频率决定，与知识价值无关。挂载因果内核后，
+   * 探索目标改为「因果图上不确定性最高 × 重要性最高的边」：
+   * 每个建议自带可证伪假设与 do-干预方案。
+   * 探索从「到处走走看」升级为「设计实验回答关键问题」。
+   *
+   * 10.0 质变（挂载科学家内核后）：建议口径从「不确定性 × 重要性」
+   * 的启发式升级为 Lindley EIG 最优设计——每条建议携带净价值
+   * （EIG + 混杂加成 − 实验代价，nat 口径）与最优臂选择，
+   * 混杂分歧边（观测≠干预）优先——那是观测永远买不到的知识。
+   *
+   * @param targetKpi 实验关心的结果指标（默认 'task.outcome'；EIG 口径下仅作无科学家时的回退）
+   * @param budget 本轮实验配额
+   */
+  proposeCausalExperiments(
+    targetKpi = 'task.outcome',
+    budget = 2,
+  ): import('./core/causal-kernel.js').CausalExperiment[] {
+    if (this.scientist) {
+      // 10.0 EIG 口径：净价值降序的最优设计（预算仲裁已内嵌——
+      // netValue ≤ 0 的问题根本不出现）；仅当问题空间空时回退启发式
+      const designs = this.scientist.designExperiments(budget);
+      if (designs.length > 0) {
+        return designs.map((d) => ({
+          from: d.from,
+          to: d.to,
+          suggestedArm: d.arm,
+          // 0~1 归一口径：净价值经 sigmoid 映射（保持接口兼容）
+          infoGain: Number((1 / (1 + Math.exp(-d.netValue))).toFixed(4)),
+          hypothesis: `${d.hypothesis}（净价值 ${d.netValue.toFixed(3)} nat：EIG ${d.armEig.toFixed(3)} + 混杂 ${d.confoundingBonus.toFixed(3)} − 代价）`,
+          uncertainty: 0,
+        }));
+      }
+    }
+    if (!this.causal) return [];
+    return this.causal.suggestExperiments(targetKpi, budget);
+  }
+
+  /**
+   * 10.0：EIG 最优实验设计透传（原生口径，供宿主直接执行与结算）。
+   * 与 proposeCausalExperiments 的区别：不压缩为 0~1 启发式评分，
+   * 返回完整的 DesignedExperiment（nat 口径 + 台账结算句柄）。
+   */
+  designOptimalExperiments(maxCount = 3): import('./core/scientist.js').DesignedExperiment[] {
+    return this.scientist ? this.scientist.designExperiments(maxCount) : [];
+  }
+
+  /**
+   * 5.0：回写因果实验结果（假设 → 干预 → 图更新闭环）。
+   *
+   * 证伪也是收获：假设被否定时区间同样收窄（后验收缩），
+   * uncertaintyReduction > 0 即记 gainedKnowledge ——
+   * 好奇心的收益率第一次有了科学口径（信息增益而非运气）。
+   */
+  recordCausalExperiment(experiment: { from: string; to: string; setTo: boolean; hypothesis: string }, observedY: boolean): CausalExplorationRecord | null {
+    if (!this.causal) return null;
+    const before = this.causal.effect(experiment.from, experiment.to);
+    const uncertaintyBefore = before.upper - before.lower;
+    this.causal.intervene(experiment.from, experiment.to, experiment.setTo, observedY, 'curiosity', experiment.hypothesis);
+    const after = this.causal.effect(experiment.from, experiment.to);
+    const uncertaintyAfter = after.upper - after.lower;
+    const record: CausalExplorationRecord = {
+      ...experiment,
+      observedY,
+      timestamp: Date.now(),
+      uncertaintyBefore: Number(uncertaintyBefore.toFixed(4)),
+      uncertaintyAfter: Number(uncertaintyAfter.toFixed(4)),
+      hypothesisSupported: (after.direction === 'positive') === experiment.setTo,
+    };
+    this.causalExplorations.push(record);
+    if (this.causalExplorations.length > 200) this.causalExplorations.splice(0, this.causalExplorations.length - 200);
+    // 同步计入探索计数（防止同一边被反复实验）
+    this.explorationCounts.set(experiment.from, (this.explorationCounts.get(experiment.from) ?? 0) + 1);
+    return record;
+  }
+
+  /** 5.0：因果实验历史 */
+  getCausalExplorations(): CausalExplorationRecord[] {
+    return [...this.causalExplorations];
+  }
+
+  /** 5.0：实验的信息增益率（平均区间收缩比例） */
+  getCausalYield(): number {
+    if (this.causalExplorations.length === 0) return 0;
+    const reductions = this.causalExplorations.map((r) => Math.max(0, r.uncertaintyBefore - r.uncertaintyAfter) / Math.max(0.01, r.uncertaintyBefore));
+    return Number((reductions.reduce((a, b) => a + b, 0) / reductions.length).toFixed(3));
   }
 
   /**
@@ -210,6 +339,10 @@ export class CuriosityEngine {
       explorationYield: this.getExplorationYield(),
       topGaps: this.scanKnowledgeGaps().slice(0, 5),
       explorationCounts: Object.fromEntries(this.explorationCounts),
+      /** 5.0：假设驱动实验（因果好奇心） */
+      causalExperiments: this.causalExplorations.length,
+      causalYield: this.getCausalYield(),
+      pendingHypotheses: this.proposeCausalExperiments('task.outcome', 3),
     };
   }
 

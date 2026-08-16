@@ -41,6 +41,11 @@ export type ExplorationDispatcher = (proposal: ExplorationProposal) => string;
 export interface MemoryMaintainer {
   distillExperience(): number;
   applyForgettingCurve(): { decayed: number; forgotten: number };
+  /**
+   * 知识蒸馏（第二阶段）：从情景记忆蒸馏出语义+程序记忆
+   * @returns 蒸馏产出的语义/程序记忆条数（{ semantic, procedural }）
+   */
+  distillKnowledge?(): Promise<{ semantic: number; procedural: number }>;
 }
 
 /** 反思教训提供器（由 index.ts 桥接到反思引擎） */
@@ -48,6 +53,37 @@ export type LessonProvider = () => Lesson[];
 
 /** 策略落地器（进化产物应用到决策引擎） */
 export type StrategyApplier = (config: Record<string, any>) => void;
+
+/**
+ * 调度策略进化桥接器（第三阶段：由 index.ts 桥接到 PolicyEvolver + Sandbox）
+ *
+ * 心跳进化段调用 runEvolutionCycle 触发「变异 → 沙盒评估 → 择优 → 热切换」；
+ * 沙盒离线运行，不阻塞操作环任务调度。
+ */
+export interface PolicyEvolutionBridge {
+  runEvolutionCycle(): Promise<unknown>;
+}
+
+/**
+ * 元认知环桥接器（第四阶段：由 index.ts 桥接到 SelfModel + MetaCognitiveController）
+ *
+ * 心跳低频段调用 runMetaCycle 触发「自我建模 → 心智报告 → 保守调整 →
+ * 观察判定/回滚」——系统观察并改进自身的进化机制（双环外环）。
+ */
+export interface MetaCognitionBridge {
+  runMetaCycle(): Promise<unknown>;
+}
+
+/**
+ * 共生进化桥接器（第五阶段 Phase 2.5：由 index.ts 桥接到 SymbiosisBridge）
+ *
+ * 心跳每拍调用 runSymbiosisTick：宿主 KPI 注入共生运行时（能量经济 +
+ * 信念市场），市场价 vs 被动统计估计的显著背离回流为漂移洞察——
+ * 模型漂移的第一现场由市场先行报警，进入目标引擎的自愈链路。
+ */
+export interface SymbiosisBridgeHook {
+  runSymbiosisTick(snapshot: KpiSnapshot): Promise<Insight[]>;
+}
 
 /** 自主心跳配置 */
 export interface AutonomyLoopConfig {
@@ -57,6 +93,8 @@ export interface AutonomyLoopConfig {
   maxDispatchPerTick: number;
   /** 每 N 轮心跳触发一次记忆维护 */
   maintenanceEveryTicks: number;
+  /** 第四阶段：每 N 轮心跳触发一次元认知环（自我建模 + 保守调整；缺省 7） */
+  metaCognitionEveryTicks: number;
   /** 每轮最多生成的目标数 */
   maxGoalsPerTick: number;
   /** 是否启用策略进化落地 */
@@ -72,6 +110,7 @@ export const DEFAULT_AUTONOMY_LOOP_CONFIG: AutonomyLoopConfig = {
   heartbeatMs: 30_000,
   maxDispatchPerTick: 2,
   maintenanceEveryTicks: 10,
+  metaCognitionEveryTicks: 7,
   maxGoalsPerTick: 3,
   enableStrategyEvolution: true,
   enableExploration: true,
@@ -92,7 +131,7 @@ export interface TickReport {
   /** 世界模型预测摘要（rising 趋势类型） */
   risingTrends: string[];
   evolved: boolean;
-  maintenance?: { distilled: number; decayed: number; forgotten: number };
+  maintenance?: { distilled: number; decayed: number; forgotten: number; semanticDistilled?: number; proceduralDistilled?: number };
   healthScore: number;
 }
 
@@ -112,6 +151,12 @@ export class AutonomyLoop {
   private maintainer: MemoryMaintainer;
   private lessonProvider: LessonProvider;
   private strategyApplier?: StrategyApplier;
+  /** 第三阶段：调度策略进化桥接（可选注入） */
+  private policyEvolution?: PolicyEvolutionBridge;
+  /** 第四阶段：元认知环桥接（可选注入） */
+  private metaCognitionBridge?: MetaCognitionBridge;
+  /** 第五阶段 Phase 2.5：共生进化桥接（可选注入，缺省不启用） */
+  private symbiosis?: SymbiosisBridgeHook;
   // 可选自主组件（向后兼容）
   private worldModel?: WorldModel;
   private curiosity?: CuriosityEngine;
@@ -119,6 +164,8 @@ export class AutonomyLoop {
   private dispatchExploration?: ExplorationDispatcher;
 
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** 重入保护：上一轮 tick 未完成时跳过新 tick */
+  private ticking = false;
   private running = false;
   private tickCount = 0;
   private reports: TickReport[] = [];
@@ -135,6 +182,12 @@ export class AutonomyLoop {
     maintainer: MemoryMaintainer;
     lessonProvider: LessonProvider;
     strategyApplier?: StrategyApplier;
+    /** 第三阶段：调度策略进化桥接（可选，缺省不启用） */
+    policyEvolution?: PolicyEvolutionBridge;
+    /** 第四阶段：元认知环桥接（可选，缺省不启用） */
+    metaCognitionBridge?: MetaCognitionBridge;
+    /** 第五阶段 Phase 2.5：共生进化桥接（可选，缺省不启用） */
+    symbiosis?: SymbiosisBridgeHook;
     worldModel?: WorldModel;
     curiosity?: CuriosityEngine;
     governor?: SafetyGovernor;
@@ -149,6 +202,9 @@ export class AutonomyLoop {
     this.maintainer = params.maintainer;
     this.lessonProvider = params.lessonProvider;
     this.strategyApplier = params.strategyApplier;
+    this.policyEvolution = params.policyEvolution;
+    this.metaCognitionBridge = params.metaCognitionBridge;
+    this.symbiosis = params.symbiosis;
     this.worldModel = params.worldModel;
     this.curiosity = params.curiosity;
     this.governor = params.governor;
@@ -183,9 +239,37 @@ export class AutonomyLoop {
 
   /**
    * 执行一轮心跳（自主智能的核心节拍）
+   *
+   * 重入保护：心跳是异步长链路（目标分解 / 沙盒进化 / 元认知环都可能
+   * 慢于 heartbeatMs），interval 触发的新 tick 与滞留中的旧 tick 并发
+   * 会双重派发目标与探索、双重触发维护与进化——上一轮未完成时本轮
+   * 直接跳过（返回空摘要，不推进计数）
    * @returns 本轮摘要
    */
   async tick(): Promise<TickReport> {
+    if (this.ticking) {
+      return {
+        tick: this.tickCount,
+        timestamp: Date.now(),
+        insightsCollected: 0,
+        goalsCreated: 0,
+        subtasksDispatched: 0,
+        explorationsDispatched: 0,
+        governanceBlocked: 0,
+        risingTrends: [],
+        evolved: false,
+        healthScore: 1,
+      };
+    }
+    this.ticking = true;
+    try {
+      return await this.runTick();
+    } finally {
+      this.ticking = false;
+    }
+  }
+
+  private async runTick(): Promise<TickReport> {
     this.tickCount += 1;
     const report: TickReport = {
       tick: this.tickCount,
@@ -202,12 +286,24 @@ export class AutonomyLoop {
 
     // ── 1. 元认知观察：采集 KPI → 异常检测 + 自愈洞察 ──
     let insights: Insight[] = [];
+    let kpiSnapshot: KpiSnapshot | undefined;
     try {
-      const snapshot = this.collectKpi();
-      insights = this.metaCognition.observe(snapshot);
+      kpiSnapshot = this.collectKpi();
+      insights = this.metaCognition.observe(kpiSnapshot);
       report.healthScore = this.metaCognition.getHealthReport().score ?? 1;
     } catch {
       /* KPI 采集失败不阻断 */
+    }
+
+    // ── 1.5 共生心跳（第五阶段 Phase 2.5）：KPI 注入能量经济 + 信念市场 ──
+    // 市场隐含概率 vs 被动统计估计显著背离 → 漂移洞察回流目标引擎（自愈链路）
+    try {
+      if (this.symbiosis && kpiSnapshot) {
+        const driftInsights = await this.symbiosis.runSymbiosisTick(kpiSnapshot);
+        insights.push(...driftInsights);
+      }
+    } catch {
+      /* 共生心跳失败不阻断主链路 */
     }
 
     // ── 2. 世界模型预见：趋势检测 → 负载预警洞察 ──
@@ -320,12 +416,43 @@ export class AutonomyLoop {
       }
     }
 
+    // ── 7.5 策略进化器（第三阶段：调度策略经沙盒验证后热切换） ──
+    // 沙盒离线评估不阻塞操作环；进化失败静默（下轮再试）
+    if (this.policyEvolution) {
+      try {
+        await this.policyEvolution.runEvolutionCycle();
+      } catch {
+        /* 策略进化失败不阻断 */
+      }
+    }
+
+    // ── 7.7 元认知环（第四阶段：自我建模 → 保守调整 → 观察/回滚） ──
+    // 低频触发（每 metaCognitionEveryTicks 轮）：观察并改进进化机制本身；
+    // 心智报告生成与参数调整均为轻量同步操作，失败静默（下轮再试）
+    if (this.metaCognitionBridge && this.tickCount % this.config.metaCognitionEveryTicks === 0) {
+      try {
+        await this.metaCognitionBridge.runMetaCycle();
+      } catch {
+        /* 元认知环失败不阻断 */
+      }
+    }
+
     // ── 8. 记忆维护（低频后台） ──
     if (this.tickCount % this.config.maintenanceEveryTicks === 0) {
       try {
         const distilled = this.maintainer.distillExperience();
         const forgetting = this.maintainer.applyForgettingCurve();
         report.maintenance = { distilled, decayed: forgetting.decayed, forgotten: forgetting.forgotten };
+        // 第二阶段：知识蒸馏（语义+程序记忆），失败不阻断主维护流程
+        if (this.maintainer.distillKnowledge) {
+          try {
+            const knowledge = await this.maintainer.distillKnowledge();
+            report.maintenance.semanticDistilled = knowledge.semantic;
+            report.maintenance.proceduralDistilled = knowledge.procedural;
+          } catch {
+            /* 知识蒸馏失败不阻断 */
+          }
+        }
       } catch {
         /* 维护失败不阻断 */
       }

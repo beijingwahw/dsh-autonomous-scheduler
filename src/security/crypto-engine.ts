@@ -70,7 +70,7 @@ export interface CryptoResult {
 }
 
 /** scrypt 派生固定盐（项目域隔离） */
-const KDF_SALT = 'dsh-autonomous-scheduler:v1:kdf';
+const KDF_SALT = 'dsh-proactive:v1:kdf';
 /** AES-256 工作密钥长度 */
 const KEY_LENGTH = 32;
 /** GCM 推荐 IV 长度 */

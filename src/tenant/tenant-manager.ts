@@ -23,7 +23,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ConfigError } from '../errors.js';
 import { LongTermMemory } from '../memory/long-term-memory.js';
+import type { ModelLongTermProfile } from '../memory/long-term-memory.js';
 import type { CryptoEngine } from '../security/crypto-engine.js';
+import type { Signal } from '../sentinel.js';
 
 /** 租户静态配置 */
 export interface TenantConfig {
@@ -71,9 +73,9 @@ export interface TenantRuntime {
   config: TenantConfig;
   memory: LongTermMemory;
   activeExecutions: number;
-  pendingSignals: any[];
+  pendingSignals: Signal[];
   isExecuting: boolean;
-  modelProfiles: Map<string, any>;
+  modelProfiles: Map<string, ModelLongTermProfile>;
   aggregationTimer: ReturnType<typeof setTimeout> | null;
   stats: {
     totalExecutions: number;
@@ -165,17 +167,19 @@ export class TenantManager {
    * @param deleteData 是否级联删除租户记忆数据，默认 false
    */
   removeTenant(tenantId: string, deleteData = false): void {
+    // 校验先行：原实现先销毁运行时再查注册表——注册表缺失时抛错，
+    // 但运行时已被删，留下「调用方以为失败、系统却已半移除」的不一致状态
+    const index = this.registry.tenants.findIndex((t) => t.id === tenantId);
+    if (index < 0) {
+      throw new ConfigError(`租户不存在: ${tenantId}`);
+    }
+    const [removed] = this.registry.tenants.splice(index, 1);
     const runtime = this.runtimes.get(tenantId);
     if (runtime) {
       if (runtime.aggregationTimer) clearTimeout(runtime.aggregationTimer);
       runtime.memory.dispose();
       this.runtimes.delete(tenantId);
     }
-    const index = this.registry.tenants.findIndex((t) => t.id === tenantId);
-    if (index < 0) {
-      throw new ConfigError(`租户不存在: ${tenantId}`);
-    }
-    const [removed] = this.registry.tenants.splice(index, 1);
     this.persistRegistry();
     if (deleteData && removed) {
       const memoryPath = this.resolveMemoryPath(removed);
@@ -206,6 +210,9 @@ export class TenantManager {
     const runtime = this.runtimes.get(tenantId);
     if (config.enabled === false && runtime) {
       if (runtime.aggregationTimer) clearTimeout(runtime.aggregationTimer);
+      // 禁用即清空待聚合信号：运行时即将销毁，残留信号只做内存驻留；
+      // 重新启用时 buildRuntime 全新起步，旧信号既不会被聚合也不会被路由
+      runtime.pendingSignals.length = 0;
       runtime.memory.dispose();
       this.runtimes.delete(tenantId);
     } else if (config.enabled !== false && !runtime) {

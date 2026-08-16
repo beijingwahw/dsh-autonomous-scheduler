@@ -1,207 +1,210 @@
-# cordis patch — dsh-autonomous-scheduler（开箱即用，零手动配置）
+# cordis patch — dsh-proactive（开箱即用，零手动配置）
 # 已封装全部国产模型：deepseek / qwen / zhipu / moonshot / minimax / spark / hunyuan / ernie / sensechat
 # 无需填写任何 apiKey：插件经 ctx 获取 DSH 已配置的 LLM 客户端，
 # DSH 自动把用户配置的 Key（Web UI / 环境变量）注入请求头。
-- name: dsh-autonomous-scheduler
-  config:
-    strategistModel:
-      id: deepseek-v4-pro
-      endpoint: https://api.deepseek.com
-    models:
-      - id: deepseek-v4-pro
-        endpoint: https://api.deepseek.com
-        timeout: 90000
-        maxConcurrency: 3
-        costPerKToken: 0.014
-        contextWindow: 128000
-        initialCapabilities:
-          taskScores:
-            code-generation: 0.9
-            architecture: 0.85
-            debugging: 0.85
-            refactoring: 0.8
-      - id: deepseek-v4-flash
-        endpoint: https://api.deepseek.com
-        timeout: 30000
-        maxConcurrency: 5
-        costPerKToken: 0.002
-        contextWindow: 128000
-        initialCapabilities:
-          taskScores:
-            documentation: 0.8
-            test-generation: 0.75
-            general: 0.7
-      - id: qwen-max
-        endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
-        timeout: 60000
-        maxConcurrency: 3
-        costPerKToken: 0.02
-        contextWindow: 32768
-        initialCapabilities:
-          taskScores:
-            general: 0.85
-            analysis: 0.85
-            documentation: 0.8
-      - id: qwen-plus
-        endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
-        timeout: 45000
-        maxConcurrency: 5
-        costPerKToken: 0.004
-        contextWindow: 131072
-        initialCapabilities:
-          taskScores:
-            general: 0.75
-            documentation: 0.8
-            test-generation: 0.7
-      - id: qwen-turbo
-        endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
-        timeout: 30000
-        maxConcurrency: 8
-        costPerKToken: 0.001
-        contextWindow: 1000000
-        initialCapabilities:
-          taskScores:
-            general: 0.65
-      - id: glm-4.5
-        endpoint: https://open.bigmodel.cn/api/paas/v4
-        timeout: 60000
-        maxConcurrency: 3
-        costPerKToken: 0.004
-        contextWindow: 128000
-        initialCapabilities:
-          taskScores:
-            code-generation: 0.8
-            general: 0.8
-            analysis: 0.8
-      - id: glm-4-flash
-        endpoint: https://open.bigmodel.cn/api/paas/v4
-        timeout: 30000
-        maxConcurrency: 8
-        costPerKToken: 0
-        contextWindow: 128000
-        initialCapabilities:
-          taskScores:
-            general: 0.65
-      - id: moonshot-v1-128k
-        endpoint: https://api.moonshot.cn/v1
-        timeout: 90000
-        maxConcurrency: 3
-        costPerKToken: 0.008
-        contextWindow: 131072
-        initialCapabilities:
-          taskScores:
-            analysis: 0.85
-            documentation: 0.8
-            general: 0.75
-      - id: abab6.5s-chat
-        endpoint: https://api.minimax.chat/v1
-        timeout: 60000
-        maxConcurrency: 3
-        costPerKToken: 0.005
-        contextWindow: 245760
-        initialCapabilities:
-          taskScores:
-            general: 0.7
-            documentation: 0.7
-      - id: generalv4.0
-        endpoint: https://spark-api-open.xf-yun.com/v1
-        timeout: 60000
-        maxConcurrency: 3
-        costPerKToken: 0.005
-        contextWindow: 8192
-        initialCapabilities:
-          taskScores:
-            general: 0.75
-            documentation: 0.7
-      - id: generalv3.5
-        endpoint: https://spark-api-open.xf-yun.com/v1
-        timeout: 45000
-        maxConcurrency: 5
-        costPerKToken: 0.003
-        contextWindow: 8192
-        initialCapabilities:
-          taskScores:
-            general: 0.65
-      - id: hunyuan-pro
-        endpoint: https://api.hunyuan.cloud.tencent.com/v1
-        timeout: 60000
-        maxConcurrency: 3
-        costPerKToken: 0.01
-        contextWindow: 65536
-        initialCapabilities:
-          taskScores:
-            general: 0.8
-            analysis: 0.8
-      - id: hunyuan-turbo
-        endpoint: https://api.hunyuan.cloud.tencent.com/v1
-        timeout: 30000
-        maxConcurrency: 5
-        costPerKToken: 0.003
-        contextWindow: 32768
-        initialCapabilities:
-          taskScores:
-            general: 0.7
-      - id: ernie-4.0-8k
-        endpoint: https://qianfan.baidubce.com/v2
-        timeout: 60000
-        maxConcurrency: 3
-        costPerKToken: 0.017
-        contextWindow: 8192
-        initialCapabilities:
-          taskScores:
-            general: 0.8
-            documentation: 0.75
-      - id: ernie-speed-128k
-        endpoint: https://qianfan.baidubce.com/v2
-        timeout: 30000
-        maxConcurrency: 8
-        costPerKToken: 0
-        contextWindow: 131072
-        initialCapabilities:
-          taskScores:
-            general: 0.65
-      - id: sensechat-5
-        endpoint: https://api.sensenova.cn/v1
-        timeout: 60000
-        maxConcurrency: 3
-        costPerKToken: 0.006
-        contextWindow: 128000
-        initialCapabilities:
-          taskScores:
-            general: 0.7
-            analysis: 0.7
-    sentinel:
-      watchCodeChanges: true
-      watchErrors: true
-      watchPerformance: true
-      aggregationWindow: 5
-    qualityThreshold: 0.7
-    maxRetries: 2
-    globalTimeout: 300000
-    enableProgress: true
-    progressPort: 9877
-    verbose: true
-    experienceStorePath: .scheduler/memory.json
-    encryption:
-      enabled: false
-      algorithm: aes-256-gcm
-      fullFileEncryption: true
-    sync:
-      localNodeId: "node-dev-01"
-      peers: []
-    consensus:
-      enabled: false
-      localNodeId: "node-01"
-      consensusPort: 9880
-      electionTimeoutMin: 1500
-      electionTimeoutMax: 3000
-      heartbeatInterval: 500
-      cluster: []
-    hotReload:
-      enabled: false
-      watchDirs: [src]
-      watchExtensions: [.ts, .tsx, .js]
-      debounceMs: 1000
-      buildCommand: pnpm build
-      autoRollback: true
-    tenants: []
+# 本文件即 package.json dsh.bundle.patch 指向的 bundle 配置层。
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        strategistModel:
+          id: deepseek-v4-pro
+          endpoint: https://api.deepseek.com
+        models:
+          - id: deepseek-v4-pro
+            endpoint: https://api.deepseek.com
+            timeout: 90000
+            maxConcurrency: 3
+            costPerKToken: 0.014
+            contextWindow: 128000
+            initialCapabilities:
+              taskScores:
+                code-generation: 0.9
+                architecture: 0.85
+                debugging: 0.85
+                refactoring: 0.8
+          - id: deepseek-v4-flash
+            endpoint: https://api.deepseek.com
+            timeout: 30000
+            maxConcurrency: 5
+            costPerKToken: 0.002
+            contextWindow: 128000
+            initialCapabilities:
+              taskScores:
+                documentation: 0.8
+                test-generation: 0.75
+                general: 0.7
+          - id: qwen-max
+            endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
+            timeout: 60000
+            maxConcurrency: 3
+            costPerKToken: 0.02
+            contextWindow: 32768
+            initialCapabilities:
+              taskScores:
+                general: 0.85
+                analysis: 0.85
+                documentation: 0.8
+          - id: qwen-plus
+            endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
+            timeout: 45000
+            maxConcurrency: 5
+            costPerKToken: 0.004
+            contextWindow: 131072
+            initialCapabilities:
+              taskScores:
+                general: 0.75
+                documentation: 0.8
+                test-generation: 0.7
+          - id: qwen-turbo
+            endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1
+            timeout: 30000
+            maxConcurrency: 8
+            costPerKToken: 0.001
+            contextWindow: 1000000
+            initialCapabilities:
+              taskScores:
+                general: 0.65
+          - id: glm-4.5
+            endpoint: https://open.bigmodel.cn/api/paas/v4
+            timeout: 60000
+            maxConcurrency: 3
+            costPerKToken: 0.004
+            contextWindow: 128000
+            initialCapabilities:
+              taskScores:
+                code-generation: 0.8
+                general: 0.8
+                analysis: 0.8
+          - id: glm-4-flash
+            endpoint: https://open.bigmodel.cn/api/paas/v4
+            timeout: 30000
+            maxConcurrency: 8
+            costPerKToken: 0
+            contextWindow: 128000
+            initialCapabilities:
+              taskScores:
+                general: 0.65
+          - id: moonshot-v1-128k
+            endpoint: https://api.moonshot.cn/v1
+            timeout: 90000
+            maxConcurrency: 3
+            costPerKToken: 0.008
+            contextWindow: 131072
+            initialCapabilities:
+              taskScores:
+                analysis: 0.85
+                documentation: 0.8
+                general: 0.75
+          - id: abab6.5s-chat
+            endpoint: https://api.minimax.chat/v1
+            timeout: 60000
+            maxConcurrency: 3
+            costPerKToken: 0.005
+            contextWindow: 245760
+            initialCapabilities:
+              taskScores:
+                general: 0.7
+                documentation: 0.7
+          - id: generalv4.0
+            endpoint: https://spark-api-open.xf-yun.com/v1
+            timeout: 60000
+            maxConcurrency: 3
+            costPerKToken: 0.005
+            contextWindow: 8192
+            initialCapabilities:
+              taskScores:
+                general: 0.75
+                documentation: 0.7
+          - id: generalv3.5
+            endpoint: https://spark-api-open.xf-yun.com/v1
+            timeout: 45000
+            maxConcurrency: 5
+            costPerKToken: 0.003
+            contextWindow: 8192
+            initialCapabilities:
+              taskScores:
+                general: 0.65
+          - id: hunyuan-pro
+            endpoint: https://api.hunyuan.cloud.tencent.com/v1
+            timeout: 60000
+            maxConcurrency: 3
+            costPerKToken: 0.01
+            contextWindow: 65536
+            initialCapabilities:
+              taskScores:
+                general: 0.8
+                analysis: 0.8
+          - id: hunyuan-turbo
+            endpoint: https://api.hunyuan.cloud.tencent.com/v1
+            timeout: 30000
+            maxConcurrency: 5
+            costPerKToken: 0.003
+            contextWindow: 32768
+            initialCapabilities:
+              taskScores:
+                general: 0.7
+          - id: ernie-4.0-8k
+            endpoint: https://qianfan.baidubce.com/v2
+            timeout: 60000
+            maxConcurrency: 3
+            costPerKToken: 0.017
+            contextWindow: 8192
+            initialCapabilities:
+              taskScores:
+                general: 0.8
+                documentation: 0.75
+          - id: ernie-speed-128k
+            endpoint: https://qianfan.baidubce.com/v2
+            timeout: 30000
+            maxConcurrency: 8
+            costPerKToken: 0
+            contextWindow: 131072
+            initialCapabilities:
+              taskScores:
+                general: 0.65
+          - id: sensechat-5
+            endpoint: https://api.sensenova.cn/v1
+            timeout: 60000
+            maxConcurrency: 3
+            costPerKToken: 0.006
+            contextWindow: 128000
+            initialCapabilities:
+              taskScores:
+                general: 0.7
+                analysis: 0.7
+        sentinel:
+          watchCodeChanges: true
+          watchErrors: true
+          watchPerformance: true
+          aggregationWindow: 5
+        qualityThreshold: 0.7
+        maxRetries: 2
+        globalTimeout: 300000
+        enableProgress: true
+        progressPort: 9877
+        verbose: true
+        experienceStorePath: .scheduler/memory.json
+        encryption:
+          enabled: false
+          algorithm: aes-256-gcm
+          fullFileEncryption: true
+        sync:
+          localNodeId: "node-dev-01"
+          peers: []
+        consensus:
+          enabled: false
+          localNodeId: "node-01"
+          consensusPort: 9880
+          electionTimeoutMin: 1500
+          electionTimeoutMax: 3000
+          heartbeatInterval: 500
+          cluster: []
+        hotReload:
+          enabled: false
+          watchDirs: [src]
+          watchExtensions: [.ts, .tsx, .js]
+          debounceMs: 1000
+          buildCommand: pnpm build
+          autoRollback: true
+        tenants: []

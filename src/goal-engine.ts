@@ -24,7 +24,7 @@ import type { Lesson } from './reflection-engine.js';
 /** 洞察来源（目标生成的输入） */
 export interface Insight {
   /** 洞察来源引擎 */
-  source: 'reflection' | 'meta-cognition' | 'memory' | 'user';
+  source: 'reflection' | 'meta-cognition' | 'memory' | 'user' | 'market';
   /** 洞察类别 */
   category: string;
   /** 关联任务类型（可选） */

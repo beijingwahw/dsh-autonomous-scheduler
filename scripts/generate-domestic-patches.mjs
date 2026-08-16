@@ -138,16 +138,18 @@ let VENDORS_CURRENT = null;
 /** 渲染一个厂商的 patch 文件内容 */
 function renderVendorPatch(vendor) {
   VENDORS_CURRENT = vendor;
-  const modelBlocks = vendor.models.map((m) => renderModel(m, 6)).join('\n');
+  const modelBlocks = vendor.models.map((m) => renderModel(m, 10)).join('\n');
   return `# ${vendor.label} — cordis patch（国产模型）
 # Key 由 DSH 自动注入请求头：在 Web UI 或环境变量 ${vendor.envVar} 中配置即可，本文件不含任何密钥。
-# 用法：将本文件内容合并进 cordis.yml，或经 DSH patch 机制加载。
-- name: dsh-autonomous-scheduler
-  config:
-    strategistModel:
-      id: ${vendor.strategist}
-      endpoint: ${vendor.endpoint}
-    models:
+# 用法：将本文件作为 --patch overlay 加载，或合并进 profile 的 cordis.patch.yml。
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        strategistModel:
+          id: ${vendor.strategist}
+          endpoint: ${vendor.endpoint}
+        models:
 ${modelBlocks}
 `;
 }
@@ -157,17 +159,19 @@ function renderAllPatch() {
   const allModels = [];
   for (const vendor of VENDORS) {
     VENDORS_CURRENT = vendor;
-    for (const m of vendor.models) allModels.push(renderModel(m, 6));
+    for (const m of vendor.models) allModels.push(renderModel(m, 10));
   }
   return `# 全部国产模型 — cordis patch（合并版）
 # 覆盖厂商：${VENDORS.map((v) => v.id).join(' / ')}
 # Key 由 DSH 自动注入请求头（各厂商对应环境变量见各单厂商 patch 文件），本文件不含任何密钥。
-- name: dsh-autonomous-scheduler
-  config:
-    strategistModel:
-      id: deepseek-v4-pro
-      endpoint: https://api.deepseek.com
-    models:
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        strategistModel:
+          id: deepseek-v4-pro
+          endpoint: https://api.deepseek.com
+        models:
 ${allModels.join('\n')}
 `;
 }
@@ -177,54 +181,57 @@ function renderRootPatch() {
   const allModels = [];
   for (const vendor of VENDORS) {
     VENDORS_CURRENT = vendor;
-    for (const m of vendor.models) allModels.push(renderModel(m, 6));
+    for (const m of vendor.models) allModels.push(renderModel(m, 10));
   }
-  return `# cordis patch — dsh-autonomous-scheduler（开箱即用，零手动配置）
+  return `# cordis patch — dsh-proactive（开箱即用，零手动配置）
 # 已封装全部国产模型：${VENDORS.map((v) => v.id).join(' / ')}
 # 无需填写任何 apiKey：插件经 ctx 获取 DSH 已配置的 LLM 客户端，
 # DSH 自动把用户配置的 Key（Web UI / 环境变量）注入请求头。
-- name: dsh-autonomous-scheduler
-  config:
-    strategistModel:
-      id: deepseek-v4-pro
-      endpoint: https://api.deepseek.com
-    models:
+# 本文件即 package.json dsh.bundle.patch 指向的 bundle 配置层。
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        strategistModel:
+          id: deepseek-v4-pro
+          endpoint: https://api.deepseek.com
+        models:
 ${allModels.join('\n')}
-    sentinel:
-      watchCodeChanges: true
-      watchErrors: true
-      watchPerformance: true
-      aggregationWindow: 5
-    qualityThreshold: 0.7
-    maxRetries: 2
-    globalTimeout: 300000
-    enableProgress: true
-    progressPort: 9877
-    verbose: true
-    experienceStorePath: .scheduler/memory.json
-    encryption:
-      enabled: false
-      algorithm: aes-256-gcm
-      fullFileEncryption: true
-    sync:
-      localNodeId: "node-dev-01"
-      peers: []
-    consensus:
-      enabled: false
-      localNodeId: "node-01"
-      consensusPort: 9880
-      electionTimeoutMin: 1500
-      electionTimeoutMax: 3000
-      heartbeatInterval: 500
-      cluster: []
-    hotReload:
-      enabled: false
-      watchDirs: [src]
-      watchExtensions: [.ts, .tsx, .js]
-      debounceMs: 1000
-      buildCommand: pnpm build
-      autoRollback: true
-    tenants: []
+        sentinel:
+          watchCodeChanges: true
+          watchErrors: true
+          watchPerformance: true
+          aggregationWindow: 5
+        qualityThreshold: 0.7
+        maxRetries: 2
+        globalTimeout: 300000
+        enableProgress: true
+        progressPort: 9877
+        verbose: true
+        experienceStorePath: .scheduler/memory.json
+        encryption:
+          enabled: false
+          algorithm: aes-256-gcm
+          fullFileEncryption: true
+        sync:
+          localNodeId: "node-dev-01"
+          peers: []
+        consensus:
+          enabled: false
+          localNodeId: "node-01"
+          consensusPort: 9880
+          electionTimeoutMin: 1500
+          electionTimeoutMax: 3000
+          heartbeatInterval: 500
+          cluster: []
+        hotReload:
+          enabled: false
+          watchDirs: [src]
+          watchExtensions: [.ts, .tsx, .js]
+          debounceMs: 1000
+          buildCommand: pnpm build
+          autoRollback: true
+        tenants: []
 `;
 }
 

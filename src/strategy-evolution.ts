@@ -14,9 +14,18 @@
  * 4. 锦标赛进化：累计足够样本后触发进化——精英保留 + 锦标赛选择父代 +
  *    高斯变异产生后代，淘汰最弱个体，种群整体适应度单调爬升
  * 5. 最优基因组推荐：进化产物直接落地为决策引擎的新配置
+ *
+ * 4.0 证据化升级：
+ * - 基因组携带 MemoryEvidence（时间加权 Beta 证据，半衰期 30 天），
+ *   outcome 的连续收益（0~1）经加权观测累积——旧决策结果自然让位
+ * - 适应度从裸 meanReward 升级为证据后验的 Wilson 置信下界
+ *   （小样本保守、防侥幸），UCB 利用项同源——探索-利用在同一统计口径下平衡
+ * - 修复淘汰逻辑 bug：精英保护过滤条件错误（elites 不足额时全员成为
+ *   survivors，精英可能被误淘汰）——修正为严格排除精英
  */
 
 import type { DecisionEngineConfig } from './decision-engine.js';
+import { initEvidence, observeWeightedEvidence, wilsonLowerBound, type MemoryEvidence } from './core/evidence.js';
 
 /** 基因组基因（决策引擎可调超参数子集） */
 export interface StrategyGenes {
@@ -37,6 +46,8 @@ export interface StrategyGenome {
   totalReward: number;
   /** 平均收益（适应度） */
   meanReward: number;
+  /** 时间加权证据（4.0：连续收益证据化；旧数据无此字段回退 meanReward） */
+  evidence?: MemoryEvidence;
   generation: number;
   createdAt: number;
 }
@@ -109,6 +120,17 @@ const OUTCOME_REWARD: Record<string, number> = {
   failed: 0,
 };
 
+/** 种群报告（运维可观测） */
+export interface EvolutionStatusReport {
+  generation: number;
+  populationSize: number;
+  applicationsSinceEvolution: number;
+  populationMeanReward: number;
+  genomes: Array<{ id: string; generation: number; applications: number; meanReward: number; genes: StrategyGenes }>;
+  bestGenome: string;
+  recentEvolutions: EvolutionReport[];
+}
+
 /**
  * 决策策略在线进化引擎
  *
@@ -132,7 +154,10 @@ export class StrategyEvolutionEngine {
   }
 
   /**
-   * UCB1 选择当前基因组（探索-利用平衡）
+   * UCB1 选择当前基因组（探索-利用平衡；4.0 利用项 = 证据化适应度）
+   *
+   * 利用项与适应度同源（Wilson 下界 × 置信折扣），探索项保持 UCB1
+   * 对数置信宽度——探索与利用在同一证据口径下平衡。
    * @returns 选中的基因组
    */
   selectGenome(): StrategyGenome {
@@ -142,7 +167,7 @@ export class StrategyEvolutionEngine {
     for (const genome of this.population) {
       // 未应用过的基因组优先探索
       if (genome.applications === 0) return genome;
-      const exploitation = genome.meanReward;
+      const exploitation = this.fitness(genome);
       const exploration = this.config.explorationConstant * Math.sqrt(Math.log(totalApplications + 1) / genome.applications);
       const score = exploitation + exploration;
       if (score > bestScore) {
@@ -165,6 +190,10 @@ export class StrategyEvolutionEngine {
     genome.applications += 1;
     genome.totalReward += reward;
     genome.meanReward = genome.totalReward / genome.applications;
+    // 4.0 证据化：连续收益（0~1）按时间加权观测累积（惰性衰减 + 首次惰性初始化）
+    const now = Date.now();
+    if (!genome.evidence) genome.evidence = initEvidence(0, 0, now);
+    observeWeightedEvidence(genome.evidence, reward, now);
     this.applicationsSinceEvolution += 1;
   }
 
@@ -190,8 +219,9 @@ export class StrategyEvolutionEngine {
       populationMeanReward: this.populationMeanReward(),
     };
 
-    // 淘汰最弱个体（精英不淘汰），由变异后代顶替
-    const survivors = ranked.filter((g) => !elites.includes(g) || elites.length < this.config.eliteCount);
+    // 淘汰最弱个体（精英严格不淘汰——修复：原条件在精英不足额时全员入 survivors，
+    // 精英保护失效），由变异后代顶替
+    const survivors = ranked.filter((g) => !elites.includes(g));
     const eliminateCount = Math.max(1, this.config.populationSize - Math.max(elites.length, 1) - Math.floor(this.config.populationSize / 2));
     const eliminated = survivors.slice(-eliminateCount);
     report.eliminated = eliminated.map((g) => g.id);
@@ -229,7 +259,7 @@ export class StrategyEvolutionEngine {
   }
 
   /** 种群报告 */
-  getReport(): any {
+  getReport(): EvolutionStatusReport {
     return {
       generation: this.generation,
       populationSize: this.population.length,
@@ -280,10 +310,18 @@ export class StrategyEvolutionEngine {
     };
   }
 
-  /** 适应度：平均收益（小样本按应用数折扣，防止侥幸） */
+  /**
+   * 适应度（4.0 证据化）：证据后验 Wilson 置信下界 × 小样本置信折扣
+   *
+   * 有时间加权证据的基因组用 Wilson 下界（小样本保守、防侥幸、旧结果
+   * 自然衰减）；无证据（未观测/旧数据）回退 meanReward × 折扣。
+   */
   private fitness(genome: StrategyGenome): number {
     if (genome.applications === 0) return 0;
     const confidenceFactor = Math.min(1, genome.applications / this.config.minApplicationsForElite);
+    if (genome.evidence) {
+      return wilsonLowerBound(genome.evidence.weightedSuccesses, genome.evidence.weightedFailures) * confidenceFactor;
+    }
     return genome.meanReward * confidenceFactor;
   }
 

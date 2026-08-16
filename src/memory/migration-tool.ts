@@ -16,6 +16,13 @@
  * 4. merge 策略对任务模式做深度合并（成功方案并集 + 失败记录并集 + 统计重算），
  *    而非简单二选一，最大化保留双方经验
  * 5. 全程错误隔离：单条记录导入失败不中断整体迁移，错误收集进 MigrationReport.errors
+ *
+ * 4.0 修复（数据丢失）：语义记忆与程序记忆此前完全不参与导出/导入——跨实例/
+ * 跨租户迁移后蒸馏出的规律与 if-then 规则全部丢失。现补全：
+ * - 导出包含 semanticMemories / proceduralMemories（可分别关闭）
+ * - 导入按 id 建冲突键，四种策略仲裁；merge 复用记忆库自身的
+ *   证据合并语义（支撑累加 + 证据继承），newer-wins 按 distilledAt/lastAppliedAt 仲裁
+ * - dryRun 同步预演语义/程序记忆的冲突与新增量
  */
 
 import crypto from 'node:crypto';
@@ -27,8 +34,14 @@ import type {
   TaskPatternMemory,
   ModelLongTermProfile,
   DecisionFeedback,
+  SemanticMemory,
+  ProceduralMemory,
   MemoryStore,
 } from './long-term-memory.js';
+import type { TenantConfig } from '../tenant/tenant-manager.js';
+
+/** 迁移冲突中可保留的记录版本（按冲突类型判别） */
+export type MigrationRecordVersion = TaskPatternMemory | ModelLongTermProfile | DecisionFeedback | SemanticMemory | ProceduralMemory;
 
 /** 迁移包（自包含、可校验、可审计） */
 export interface MigrationPackage {
@@ -43,6 +56,8 @@ export interface MigrationPackage {
     includePatterns: boolean;
     includeModelProfiles: boolean;
     includeFeedback: boolean;
+    includeSemanticMemories: boolean;
+    includeProceduralMemories: boolean;
     includeGlobalStats: boolean;
     tenantFilter?: string[];
   };
@@ -52,8 +67,12 @@ export interface MigrationPackage {
     taskPatterns?: TaskPatternMemory[];
     modelProfiles?: ModelLongTermProfile[];
     decisionFeedback?: DecisionFeedback[];
+    /** 4.0：语义记忆（跨任务规律）——此前缺失导致迁移丢数据 */
+    semanticMemories?: SemanticMemory[];
+    /** 4.0：程序记忆（if-then 规则）——此前缺失导致迁移丢数据 */
+    proceduralMemories?: ProceduralMemory[];
     globalStats?: MemoryStore['globalStats'];
-    tenants?: any[];
+    tenants?: TenantConfig[];
   };
 }
 
@@ -62,10 +81,10 @@ export type MergeStrategy = 'overwrite' | 'merge' | 'skip' | 'newer-wins';
 
 /** 迁移冲突记录（保留双方数据供审计） */
 export interface MigrationConflict {
-  type: 'pattern' | 'model-profile' | 'feedback';
+  type: 'pattern' | 'model-profile' | 'feedback' | 'semantic' | 'procedural';
   key: string;
-  localVersion: any;
-  remoteVersion: any;
+  localVersion: MigrationRecordVersion;
+  remoteVersion: MigrationRecordVersion;
   resolution?: MergeStrategy;
 }
 
@@ -77,6 +96,8 @@ export interface MigrationReport {
     patterns: number;
     modelProfiles: number;
     feedback: number;
+    semantic: number;
+    procedural: number;
   };
   skipped: number;
   conflicts: MigrationConflict[];
@@ -89,6 +110,8 @@ export interface ExportOptions {
   includePatterns?: boolean;
   includeModelProfiles?: boolean;
   includeFeedback?: boolean;
+  includeSemanticMemories?: boolean;
+  includeProceduralMemories?: boolean;
   includeGlobalStats?: boolean;
   tenantFilter?: string[];
   instanceName?: string;
@@ -124,6 +147,8 @@ export class MigrationTool {
       includePatterns: options?.includePatterns ?? true,
       includeModelProfiles: options?.includeModelProfiles ?? true,
       includeFeedback: options?.includeFeedback ?? true,
+      includeSemanticMemories: options?.includeSemanticMemories ?? true,
+      includeProceduralMemories: options?.includeProceduralMemories ?? true,
       includeGlobalStats: options?.includeGlobalStats ?? true,
       tenantFilter: options?.tenantFilter,
       instanceName: options?.instanceName,
@@ -133,6 +158,8 @@ export class MigrationTool {
     if (opts.includePatterns) data.taskPatterns = memory.getAllTaskPatterns();
     if (opts.includeModelProfiles) data.modelProfiles = memory.getAllModelProfiles();
     if (opts.includeFeedback) data.decisionFeedback = memory.getAllDecisionFeedback();
+    if (opts.includeSemanticMemories) data.semanticMemories = memory.getAllSemanticMemories();
+    if (opts.includeProceduralMemories) data.proceduralMemories = memory.getAllProceduralMemories();
     if (opts.includeGlobalStats) data.globalStats = memory.getGlobalStats();
 
     return this.buildPackage(data, opts);
@@ -185,7 +212,7 @@ export class MigrationTool {
     const report: MigrationReport = {
       success: true,
       strategy,
-      imported: { patterns: 0, modelProfiles: 0, feedback: 0 },
+      imported: { patterns: 0, modelProfiles: 0, feedback: 0, semantic: 0, procedural: 0 },
       skipped: 0,
       conflicts: [],
       errors: [],
@@ -255,7 +282,65 @@ export class MigrationTool {
         }
       }
 
-      // 4. 导入决策反馈（按 id 去重，天然幂等）
+      // 4. 导入语义记忆（4.0 补全：按 id 冲突键；merge 复用记忆库证据合并语义）
+      for (const remote of pkg.data.semanticMemories ?? []) {
+        try {
+          const local = memory.getAllSemanticMemories().find((m) => m.id === remote.id);
+          if (!local) {
+            memory.upsertSemanticMemory(remote);
+            report.imported.semantic += 1;
+            continue;
+          }
+          const conflict: MigrationConflict = {
+            type: 'semantic',
+            key: remote.id,
+            localVersion: local,
+            remoteVersion: remote,
+            resolution: strategy,
+          };
+          report.conflicts.push(conflict);
+          const winner = this.resolveSemanticConflict(local, remote, strategy);
+          if (winner === null) {
+            report.skipped += 1;
+          } else {
+            memory.upsertSemanticMemory(winner);
+            report.imported.semantic += 1;
+          }
+        } catch (err) {
+          report.errors.push(`semantic[${remote.id}]: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // 5. 导入程序记忆（4.0 补全：按 id 冲突键；merge 复用记忆库证据合并语义）
+      for (const remote of pkg.data.proceduralMemories ?? []) {
+        try {
+          const local = memory.getAllProceduralMemories().find((p) => p.id === remote.id);
+          if (!local) {
+            memory.upsertProceduralMemory(remote);
+            report.imported.procedural += 1;
+            continue;
+          }
+          const conflict: MigrationConflict = {
+            type: 'procedural',
+            key: remote.id,
+            localVersion: local,
+            remoteVersion: remote,
+            resolution: strategy,
+          };
+          report.conflicts.push(conflict);
+          const winner = this.resolveProceduralConflict(local, remote, strategy);
+          if (winner === null) {
+            report.skipped += 1;
+          } else {
+            memory.upsertProceduralMemory(winner);
+            report.imported.procedural += 1;
+          }
+        } catch (err) {
+          report.errors.push(`procedural[${remote.id}]: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // 6. 导入决策反馈（按 id 去重，天然幂等）
       for (const remote of pkg.data.decisionFeedback ?? []) {
         try {
           const written = memory.appendFeedback(remote);
@@ -269,7 +354,7 @@ export class MigrationTool {
         }
       }
 
-      // 5. 合并全局统计（仅 merge / overwrite 策略下累加）
+      // 7. 合并全局统计（仅 merge / overwrite 策略下累加）
       if (pkg.data.globalStats && (strategy === 'merge' || strategy === 'overwrite')) {
         memory.mergeGlobalStats(pkg.data.globalStats);
       }
@@ -306,10 +391,14 @@ export class MigrationTool {
     let newPatterns = 0;
     let newProfiles = 0;
     let newFeedback = 0;
+    let newSemantic = 0;
+    let newProcedural = 0;
     let duplicates = 0;
 
     const localPatterns = memory.getAllTaskPatterns();
     const localFeedbackIds = new Set(memory.getAllDecisionFeedback().map((f) => f.id));
+    const localSemanticIds = new Set(memory.getAllSemanticMemories().map((m) => m.id));
+    const localProceduralIds = new Set(memory.getAllProceduralMemories().map((p) => p.id));
 
     for (const remote of pkg.data.taskPatterns ?? []) {
       const local = localPatterns.find((p) => p.fingerprint === remote.fingerprint);
@@ -334,6 +423,20 @@ export class MigrationTool {
         newFeedback += 1;
       }
     }
+    for (const remote of pkg.data.semanticMemories ?? []) {
+      if (localSemanticIds.has(remote.id)) {
+        conflicts.push({ type: 'semantic', key: remote.id, localVersion: memory.getAllSemanticMemories().find((m) => m.id === remote.id)!, remoteVersion: remote });
+      } else {
+        newSemantic += 1;
+      }
+    }
+    for (const remote of pkg.data.proceduralMemories ?? []) {
+      if (localProceduralIds.has(remote.id)) {
+        conflicts.push({ type: 'procedural', key: remote.id, localVersion: memory.getAllProceduralMemories().find((p) => p.id === remote.id)!, remoteVersion: remote });
+      } else {
+        newProcedural += 1;
+      }
+    }
 
     return {
       conflicts,
@@ -341,12 +444,16 @@ export class MigrationTool {
         newPatterns,
         newProfiles,
         newFeedback,
+        newSemantic,
+        newProcedural,
         conflicts: conflicts.length,
         duplicates,
         totalIncoming:
           (pkg.data.taskPatterns?.length ?? 0) +
           (pkg.data.modelProfiles?.length ?? 0) +
-          (pkg.data.decisionFeedback?.length ?? 0),
+          (pkg.data.decisionFeedback?.length ?? 0) +
+          (pkg.data.semanticMemories?.length ?? 0) +
+          (pkg.data.proceduralMemories?.length ?? 0),
       },
     };
   }
@@ -382,6 +489,8 @@ export class MigrationTool {
         includePatterns: opts.includePatterns ?? true,
         includeModelProfiles: opts.includeModelProfiles ?? true,
         includeFeedback: opts.includeFeedback ?? true,
+        includeSemanticMemories: opts.includeSemanticMemories ?? true,
+        includeProceduralMemories: opts.includeProceduralMemories ?? true,
         includeGlobalStats: opts.includeGlobalStats ?? true,
         tenantFilter: opts.tenantFilter,
       },
@@ -397,13 +506,14 @@ export class MigrationTool {
   }
 
   /** 递归按键名排序的规范化 JSON 序列化（保证任意嵌套层级的确定性） */
-  private canonicalStringify(value: any): string {
+  private canonicalStringify(value: unknown): string {
     if (value === null || typeof value !== 'object') return JSON.stringify(value);
     if (Array.isArray(value)) {
       return `[${value.map((v) => this.canonicalStringify(v)).join(',')}]`;
     }
-    const keys = Object.keys(value).sort();
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${this.canonicalStringify(value[k])}`).join(',')}}`;
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${this.canonicalStringify(record[k])}`).join(',')}}`;
   }
 
   /** 校验迁移包完整性 */
@@ -545,5 +655,49 @@ export class MigrationTool {
       worstTaskType: ranked[ranked.length - 1]?.[0] ?? local.worstTaskType,
       stability: (local.stability + remote.stability) / 2,
     };
+  }
+
+  /**
+   * 语义记忆冲突仲裁（4.0 补全）
+   *
+   * merge 不做二选一：交给记忆库 upsert 的证据合并语义（同 id 覆盖时
+   * 继承既有 evidence 与应用反馈统计；同 statement 时支撑累加合并）。
+   * newer-wins 按 max(distilledAt, lastAppliedAt) 仲裁。
+   * @returns 胜出者；skip 策略返回 null 表示保留本地
+   */
+  private resolveSemanticConflict(local: SemanticMemory, remote: SemanticMemory, strategy: MergeStrategy): SemanticMemory | null {
+    switch (strategy) {
+      case 'overwrite':
+        return remote;
+      case 'skip':
+        return null;
+      case 'newer-wins': {
+        const freshness = (m: SemanticMemory): number => Math.max(m.distilledAt, m.lastAppliedAt ?? 0);
+        return freshness(remote) >= freshness(local) ? remote : local;
+      }
+      case 'merge':
+      default:
+        return remote;
+    }
+  }
+
+  /**
+   * 程序记忆冲突仲裁（4.0 补全；语义同 resolveSemanticConflict）
+   * @returns 胜出者；skip 策略返回 null 表示保留本地
+   */
+  private resolveProceduralConflict(local: ProceduralMemory, remote: ProceduralMemory, strategy: MergeStrategy): ProceduralMemory | null {
+    switch (strategy) {
+      case 'overwrite':
+        return remote;
+      case 'skip':
+        return null;
+      case 'newer-wins': {
+        const freshness = (m: ProceduralMemory): number => Math.max(m.distilledAt, m.lastAppliedAt ?? 0);
+        return freshness(remote) >= freshness(local) ? remote : local;
+      }
+      case 'merge':
+      default:
+        return remote;
+    }
   }
 }

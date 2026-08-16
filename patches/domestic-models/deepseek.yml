@@ -1,32 +1,34 @@
 # DeepSeek 深度求索 — cordis patch（国产模型）
 # Key 由 DSH 自动注入请求头：在 Web UI 或环境变量 DEEPSEEK_API_KEY 中配置即可，本文件不含任何密钥。
-# 用法：将本文件内容合并进 cordis.yml，或经 DSH patch 机制加载。
-- name: dsh-autonomous-scheduler
-  config:
-    strategistModel:
-      id: deepseek-v4-pro
-      endpoint: https://api.deepseek.com
-    models:
-      - id: deepseek-v4-pro
-        endpoint: https://api.deepseek.com
-        timeout: 90000
-        maxConcurrency: 3
-        costPerKToken: 0.014
-        contextWindow: 128000
-        initialCapabilities:
-          taskScores:
-            code-generation: 0.9
-            architecture: 0.85
-            debugging: 0.85
-            refactoring: 0.8
-      - id: deepseek-v4-flash
-        endpoint: https://api.deepseek.com
-        timeout: 30000
-        maxConcurrency: 5
-        costPerKToken: 0.002
-        contextWindow: 128000
-        initialCapabilities:
-          taskScores:
-            documentation: 0.8
-            test-generation: 0.75
-            general: 0.7
+# 用法：将本文件作为 --patch overlay 加载，或合并进 profile 的 cordis.patch.yml。
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        strategistModel:
+          id: deepseek-v4-pro
+          endpoint: https://api.deepseek.com
+        models:
+          - id: deepseek-v4-pro
+            endpoint: https://api.deepseek.com
+            timeout: 90000
+            maxConcurrency: 3
+            costPerKToken: 0.014
+            contextWindow: 128000
+            initialCapabilities:
+              taskScores:
+                code-generation: 0.9
+                architecture: 0.85
+                debugging: 0.85
+                refactoring: 0.8
+          - id: deepseek-v4-flash
+            endpoint: https://api.deepseek.com
+            timeout: 30000
+            maxConcurrency: 5
+            costPerKToken: 0.002
+            contextWindow: 128000
+            initialCapabilities:
+              taskScores:
+                documentation: 0.8
+                test-generation: 0.75
+                general: 0.7

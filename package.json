@@ -1,17 +1,45 @@
 {
-  "name": "dsh-autonomous-scheduler",
+  "name": "dsh-proactive",
   "version": "0.1.0",
   "description": "自主智能多模型协同调度系统 — 主动感知、自主决策、多模型并行、质量反思自愈、经验沉淀进化",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "patches",
+    "cordis.yml",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsdown src/index.ts --format esm --dts",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "generate:patches": "node scripts/generate-domestic-patches.mjs"
   },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "scheduler",
+    "autonomous",
+    "llm"
+  ],
+  "engines": {
+    "node": "^22.18.0 || >=24.11.0"
+  },
   "dependencies": {
-    "@deepseek-ai/cordis": "latest"
+    "@deepseek-ai/cordis": "latest",
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
@@ -19,6 +47,8 @@
     "typescript": "latest"
   },
   "dsh": {
-    "plugin": true
+    "bundle": {
+      "patch": "./cordis.yml"
+    }
   }
 }

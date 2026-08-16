@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { NetworkError } from '../errors.js';
+import type { Decision } from '../decision-engine.js';
 
 /** 节点角色 */
 export type NodeRole = 'leader' | 'follower' | 'candidate';
@@ -37,10 +38,59 @@ export interface ConsensusLogEntry {
     type: 'execute-plan' | 'reject-signal' | 'defer-signal' | 'reassign-model' | 'escalate-to-user';
     signalId: string;
     signalDescription: string;
-    decision: any;
+    decision: Decision | null;
     proposedBy: string;
   };
   timestamp: number;
+}
+
+/** 集群状态摘要（运维可观测） */
+export interface ClusterStatus {
+  localNodeId: string;
+  role: NodeRole;
+  term: number;
+  leaderId: string | null;
+  commitIndex: number;
+  lastLogIndex: number;
+  logLength: number;
+  peers: Array<{ nodeId: string; address: string; matchIndex: number; nextIndex: number }>;
+  pendingProposals: number;
+}
+
+// ─────────────────────────── Raft RPC 线缆类型 ───────────────────────────
+
+/** RequestVote 请求参数（Raft §5.2） */
+interface RequestVoteArgs {
+  term: number;
+  candidateId: string;
+  lastLogIndex: number;
+  lastLogTerm: number;
+}
+
+/** RequestVote 响应 */
+interface RequestVoteReply {
+  ok?: boolean;
+  term: number;
+  voteGranted: boolean;
+}
+
+/** AppendEntries 请求参数（Raft §5.3） */
+interface AppendEntriesArgs {
+  term: number;
+  leaderId: string;
+  prevLogIndex: number;
+  prevLogTerm: number;
+  entries: ConsensusLogEntry[];
+  leaderCommit: number;
+}
+
+/** AppendEntries 响应 */
+interface AppendEntriesReply {
+  ok?: boolean;
+  term: number;
+  success: boolean;
+  /** 一致性冲突提示：follower 日志中从该 index 起必然失配（加速 nextIndex 回退） */
+  conflictIndex?: number;
 }
 
 /** 集群节点配置 */
@@ -78,7 +128,7 @@ interface RaftPersistentState {
 /** 提案结果 */
 interface ProposeResult {
   committed: boolean;
-  decision: any;
+  decision: Decision | null;
 }
 
 /**
@@ -107,8 +157,8 @@ export class RaftEngine {
   private server: http.Server | null = null;
   private commitCallbacks: Array<(entry: ConsensusLogEntry) => void> = [];
   private roleChangeCallbacks: Array<(role: NodeRole, term: number) => void> = [];
-  /** 提案等待队列：logIndex → resolver */
-  private pendingProposals = new Map<number, (result: ProposeResult) => void>();
+  /** 提案等待队列：logIndex → { term, resolver }（term 防跨任期错配兑现） */
+  private pendingProposals = new Map<number, { term: number; resolve: (result: ProposeResult) => void }>();
   private running = false;
 
   constructor(config: RaftConfig) {
@@ -143,8 +193,8 @@ export class RaftEngine {
     this.server?.close();
     this.server = null;
     // 拒绝所有等待中的提案
-    for (const resolve of this.pendingProposals.values()) {
-      resolve({ committed: false, decision: null });
+    for (const p of this.pendingProposals.values()) {
+      p.resolve({ committed: false, decision: null });
     }
     this.pendingProposals.clear();
     this.persistState();
@@ -197,9 +247,12 @@ export class RaftEngine {
         resolve({ committed: false, decision: null });
       }, timeoutMs);
       timer.unref?.();
-      this.pendingProposals.set(entry.index, (result) => {
-        clearTimeout(timer);
-        resolve(result);
+      this.pendingProposals.set(entry.index, {
+        term: this.currentTerm,
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
       });
       // 立即触发一轮心跳加速复制
       this.broadcastHeartbeat();
@@ -224,7 +277,7 @@ export class RaftEngine {
   /**
    * 集群状态摘要（供 manage_consensus status 使用）
    */
-  getClusterStatus(): any {
+  getClusterStatus(): ClusterStatus {
     return {
       localNodeId: this.config.localNodeId,
       role: this.role,
@@ -291,13 +344,13 @@ export class RaftEngine {
 
     let settled = false;
     for (const peer of peers) {
-      this.sendRpc(peer, 'RequestVote', {
+      this.sendRpc<RequestVoteReply>(peer, 'RequestVote', {
         term: this.currentTerm,
         candidateId: this.config.localNodeId,
         lastLogIndex: lastLogIdx,
         lastLogTerm,
       })
-        .then((reply: any) => {
+        .then((reply) => {
           if (settled || this.role !== 'candidate') return;
           if (reply.term > this.currentTerm) {
             this.stepDown(reply.term);
@@ -365,10 +418,10 @@ export class RaftEngine {
   private async replicateTo(peer: ClusterNodeConfig): Promise<void> {
     const next = this.nextIndex.get(peer.nodeId) ?? this.lastLogIndex() + 1;
     const prevLogIndex = next - 1;
-    const prevEntry = this.log.find((e) => e.index === prevLogIndex);
+    const prevEntry = this.findByIndex(prevLogIndex);
     const entries = this.log.filter((e) => e.index >= next);
 
-    const reply: any = await this.sendRpc(peer, 'AppendEntries', {
+    const reply = await this.sendRpc<AppendEntriesReply>(peer, 'AppendEntries', {
       term: this.currentTerm,
       leaderId: this.config.localNodeId,
       prevLogIndex,
@@ -389,8 +442,11 @@ export class RaftEngine {
       this.nextIndex.set(peer.nodeId, newMatch + 1);
       this.advanceCommitIndex();
     } else {
-      // 一致性失败：回退 nextIndex 重试
-      this.nextIndex.set(peer.nodeId, Math.max(1, next - 1));
+      // 一致性失败：优先采用 follower 的冲突索引提示（直接跳到必然失配处），
+      // 无提示时退化为逐跳 -1——大日志滞后 follower 逐跳回退可达数百轮心跳
+      const fallback = Math.max(1, next - 1);
+      const hinted = reply.conflictIndex && reply.conflictIndex >= 1 ? Math.min(next, reply.conflictIndex) : fallback;
+      this.nextIndex.set(peer.nodeId, Math.max(1, Math.min(hinted, fallback)));
     }
   }
 
@@ -398,7 +454,7 @@ export class RaftEngine {
   private advanceCommitIndex(): void {
     const majority = this.majority();
     for (let n = this.lastLogIndex(); n > this.commitIndex; n--) {
-      const entry = this.log.find((e) => e.index === n);
+      const entry = this.findByIndex(n);
       if (!entry || entry.term !== this.currentTerm) continue; // §5.4.2 安全性
       const replicated = 1 + this.peers().filter((p) => (this.matchIndex.get(p.nodeId) ?? 0) >= n).length;
       if (replicated >= majority) {
@@ -413,7 +469,7 @@ export class RaftEngine {
   private applyCommitted(): void {
     while (this.lastApplied < this.commitIndex) {
       this.lastApplied += 1;
-      const entry = this.log.find((e) => e.index === this.lastApplied);
+      const entry = this.findByIndex(this.lastApplied);
       if (!entry) continue;
       for (const cb of this.commitCallbacks) {
         try {
@@ -422,11 +478,18 @@ export class RaftEngine {
           /* 状态机回调异常不阻塞应用循环 */
         }
       }
-      // 兑现提案等待
-      const resolver = this.pendingProposals.get(entry.index);
-      if (resolver) {
+      // 兑现提案等待：任期必须匹配。原实现按 index 单键兑现——领导者
+      // 在任期 T 于 index i 留下的未决提案，可能被任期 T' 的「另一条
+      // 不同条目」在同 index 提交时错误兑现（拿别人的 decision 报成功）；
+      // 任期不符时该提案已不可能按原样提交，按失败兑现
+      const pending = this.pendingProposals.get(entry.index);
+      if (pending) {
         this.pendingProposals.delete(entry.index);
-        resolver({ committed: true, decision: entry.command.decision });
+        pending.resolve(
+          pending.term === entry.term
+            ? { committed: true, decision: entry.command.decision }
+            : { committed: false, decision: null },
+        );
       }
     }
   }
@@ -434,7 +497,7 @@ export class RaftEngine {
   // ─────────────────────────── RPC 处理 ───────────────────────────
 
   /** 处理 RequestVote */
-  private handleRequestVote(args: any): any {
+  private handleRequestVote(args: RequestVoteArgs): RequestVoteReply {
     if (args.term > this.currentTerm) this.stepDown(args.term);
     let voteGranted = false;
     if (args.term === this.currentTerm && (this.votedFor === null || this.votedFor === args.candidateId)) {
@@ -453,7 +516,7 @@ export class RaftEngine {
   }
 
   /** 处理 AppendEntries */
-  private handleAppendEntries(args: any): any {
+  private handleAppendEntries(args: AppendEntriesArgs): AppendEntriesReply {
     if (args.term > this.currentTerm) this.stepDown(args.term);
     if (args.term < this.currentTerm) {
       return { term: this.currentTerm, success: false };
@@ -466,26 +529,56 @@ export class RaftEngine {
     this.leaderId = args.leaderId;
     this.resetElectionTimer();
 
-    // 一致性检查
+    // 一致性检查：失配时附冲突索引提示（prevEntry 缺失 → 提示 min(本地末尾+1,
+    // prevLogIndex)；任期失配 → 提示该任期段首，领导者可一次跳到必然失配处）
     if (args.prevLogIndex > 0) {
-      const prevEntry = this.log.find((e) => e.index === args.prevLogIndex);
+      const prevEntry = this.findByIndex(args.prevLogIndex);
       if (!prevEntry || prevEntry.term !== args.prevLogTerm) {
-        return { term: this.currentTerm, success: false };
+        let conflictIndex: number;
+        if (!prevEntry) {
+          conflictIndex = Math.min(this.lastLogIndex() + 1, args.prevLogIndex);
+        } else {
+          // 回溯到本地 prevEntry 同任期的最早索引：该任期段内必然全部失配
+          let i = args.prevLogIndex;
+          while (i > 1) {
+            const e = this.findByIndex(i - 1);
+            if (!e || e.term !== prevEntry.term) break;
+            i -= 1;
+          }
+          conflictIndex = i;
+        }
+        return { term: this.currentTerm, success: false, conflictIndex };
       }
     }
 
-    // 追加 / 覆盖日志
-    for (const entry of args.entries as ConsensusLogEntry[]) {
-      const existing = this.log.find((e) => e.index === entry.index);
-      if (existing && existing.term !== entry.term) {
-        // 冲突：截断后续
-        this.log = this.log.filter((e) => e.index < entry.index);
-        this.log.push(entry);
-      } else if (!existing) {
-        this.log.push(entry);
+    // 追加 / 覆盖日志（Raft §5.3）：定位首个不一致条目，从该点截断后
+    // 整体追加后缀并按索引排序。原实现逐条独立 push——乱序或带空洞的
+    // entries 会产生错序日志（lastLogIndex 读尾元素失真，一致性检查
+    // 与复制进度全部错位；空洞条目还会绕过冲突截断直接入链）
+    let firstConflict = -1;
+    for (let i = 0; i < args.entries.length; i += 1) {
+      const entry = args.entries[i]!;
+      const existing = this.findByIndex(entry.index);
+      if (!existing || existing.term === entry.term) continue; // 已一致 / 纯新增
+      firstConflict = i;
+      break;
+    }
+    let mutated = false;
+    if (firstConflict >= 0) {
+      const cutIndex = args.entries[firstConflict]!.index;
+      this.log = this.log.filter((e) => e.index < cutIndex);
+      for (let i = firstConflict; i < args.entries.length; i += 1) this.log.push(args.entries[i]!);
+      mutated = true;
+    } else {
+      // 无冲突：按下标有序插入（日志按 index 升序的不变量由插入点保证，
+      // 免去每批 O(n·logn) 全量排序；纯追加路径为 O(1) 尾推）
+      for (const entry of args.entries) {
+        if (this.insertOrdered(entry)) mutated = true;
       }
     }
-    this.persistState();
+    if (mutated) {
+      this.persistState();
+    }
 
     // 推进提交
     if (args.leaderCommit > this.commitIndex) {
@@ -503,19 +596,19 @@ export class RaftEngine {
       let body = '';
       req.on('data', (c) => (body += c));
       req.on('end', () => {
-        let reply: any = { ok: false };
+        let reply: Record<string, unknown> = { ok: false };
         try {
-          const { rpc, args } = JSON.parse(body || '{}');
+          const { rpc, args } = JSON.parse(body || '{}') as { rpc?: string; args?: unknown };
           switch (rpc) {
             case 'RequestVote':
-              reply = { ok: true, ...this.handleRequestVote(args) };
+              reply = { ok: true, ...this.handleRequestVote(args as RequestVoteArgs) };
               break;
             case 'AppendEntries':
-              reply = { ok: true, ...this.handleAppendEntries(args) };
+              reply = { ok: true, ...this.handleAppendEntries(args as AppendEntriesArgs) };
               break;
             case 'Propose':
               // 异步提案：立即受理，结果通过长轮询返回
-              this.propose(args.command, 8000).then((result) => {
+              this.propose((args as { command: ConsensusLogEntry['command'] }).command, 8000).then((result) => {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ ok: true, ...result }));
               });
@@ -539,8 +632,8 @@ export class RaftEngine {
     this.server.listen(this.config.consensusPort);
   }
 
-  /** 发送 RPC 到 peer */
-  private sendRpc(peer: ClusterNodeConfig, rpc: string, args: any): Promise<any> {
+  /** 发送 RPC 到 peer（泛型响应类型，JSON 边界处一次性断言） */
+  private sendRpc<T>(peer: ClusterNodeConfig, rpc: string, args: Record<string, unknown>): Promise<T> {
     return new Promise((resolve, reject) => {
       const payload = JSON.stringify({ rpc, args });
       const req = http.request(
@@ -557,7 +650,7 @@ export class RaftEngine {
           res.on('data', (c) => (data += c));
           res.on('end', () => {
             try {
-              resolve(JSON.parse(data || '{}'));
+              resolve(JSON.parse(data || '{}') as T);
             } catch {
               reject(new NetworkError(`RPC 响应解析失败: ${rpc}`));
             }
@@ -578,14 +671,22 @@ export class RaftEngine {
   private async forwardPropose(leaderId: string, command: ConsensusLogEntry['command'], timeoutMs: number): Promise<ProposeResult> {
     const leader = this.config.cluster.find((n) => n.nodeId === leaderId);
     if (!leader) return { committed: false, decision: null };
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const reply = await Promise.race([
-        this.sendRpc(leader, 'Propose', { command }),
-        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('forward timeout')), timeoutMs)),
+        this.sendRpc<ProposeResult>(leader, 'Propose', { command }),
+        // 超时兜底定时器在成功路径同样会被 finally 清除——原实现仅在
+        // reject 时自然结束，每笔成功转发都悬挂一个 timer 到 timeoutMs
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new NetworkError('forward timeout')), timeoutMs);
+          timer.unref?.();
+        }),
       ]);
       return { committed: reply.committed === true, decision: reply.decision ?? null };
     } catch {
       return { committed: false, decision: null };
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -615,6 +716,53 @@ export class RaftEngine {
   /** 最后一条日志索引 */
   private lastLogIndex(): number {
     return this.log.length > 0 ? this.log[this.log.length - 1]!.index : 0;
+  }
+
+  /**
+   * 按索引二分查找日志条目（日志保持 index 升序不变量）。
+   * 原实现 Array.find 线性扫描——advanceCommitIndex 每轮对每个 n 都
+   * 全表扫，日志增长到数千条后复制心跳的 CPU 开销平方级膨胀
+   */
+  private findByIndex(index: number): ConsensusLogEntry | undefined {
+    let lo = 0;
+    let hi = this.log.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const e = this.log[mid]!;
+      if (e.index === index) return e;
+      if (e.index < index) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return undefined;
+  }
+
+  /**
+   * 有序插入：索引已存在返回 false；否则按升序插入到正确位次
+   * （纯追加路径 index > 尾元素 → O(1) 尾推）
+   */
+  private insertOrdered(entry: ConsensusLogEntry): boolean {
+    const last = this.log[this.log.length - 1];
+    if (last) {
+      if (last.index === entry.index) return false;
+      if (last.index < entry.index) {
+        this.log.push(entry);
+        return true;
+      }
+    } else {
+      this.log.push(entry);
+      return true;
+    }
+    // 中段插入：二分定位第一个大于 entry.index 的位置
+    let lo = 0;
+    let hi = this.log.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.log[mid]!.index < entry.index) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    if (this.log[lo]?.index === entry.index) return false;
+    this.log.splice(lo, 0, entry);
+    return true;
   }
 
   /** 最后一条日志任期 */

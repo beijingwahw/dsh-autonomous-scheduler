@@ -17,13 +17,12 @@
 
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { NetworkError } from './errors.js';
 
 /** 进度事件（type 为附录协议中的 13 种事件名，可自由扩展） */
 export interface ProgressEvent {
   type: string;
   timestamp: number;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /** WebSocket 握手魔数（RFC 6455 §4.2.2） */
@@ -40,6 +39,8 @@ interface WsConnection {
   socket: import('node:net').Socket;
   /** 是否已完成关闭握手 */
   closed: boolean;
+  /** 最近一次收到该连接任何入站帧（pong/上行）的时间 */
+  lastPongAt: number;
 }
 
 /**
@@ -76,7 +77,8 @@ export class ProgressBroadcaster {
 
   /**
    * 启动 WebSocket 服务
-   * @throws NetworkError 端口被占用或监听失败时（通过异步错误事件抛出）
+   * 监听失败（端口冲突等）通过 'error' 事件降级停机并记录，
+   * 不抛出——EventEmitter 回调内 throw 会成为进程级未捕获异常
    */
   start(): void {
     if (this.started) return;
@@ -89,7 +91,7 @@ export class ProgressBroadcaster {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
-          service: 'dsh-autonomous-scheduler/progress-ws',
+          service: 'dsh-proactive/progress-ws',
           clients: this.connections.size,
           bufferedEvents: this.replayBuffer.length,
         }),
@@ -98,14 +100,25 @@ export class ProgressBroadcaster {
 
     this.server.on('upgrade', (req, socket) => this.handleUpgrade(req, socket as import('node:net').Socket));
     this.server.on('error', (err) => {
-      throw new NetworkError(`进度广播服务异常: ${err.message}`, { port: this.port });
+      // 运维事件（EADDRINUSE / 网络异常）优雅降级：记录并复位启动位，
+      // 允许宿主换端口重启；绝不在此 throw——'error' 监听器内的
+      // 异常无人可捕获，会直接击穿宿主进程
+      console.error(`[progress-ws] 进度广播服务异常（端口 ${this.port}），已降级停机: ${err.message}`);
+      this.stop();
     });
 
     this.server.listen(this.port);
 
-    // 心跳：定期 ping 所有客户端，回收无响应连接
+    // 心跳：定期 ping 所有客户端，回收无响应连接。
+    // pong 超时检测：仅靠「写 ping 失败」回收不了半开连接（写缓冲照常
+    // 吞下 ping，对端已死）——连续 2 个心跳周期无任何入站帧即判死线
     this.heartbeatTimer = setInterval(() => {
-      for (const conn of this.connections) {
+      const deadline = Date.now() - 2 * HEARTBEAT_INTERVAL_MS;
+      for (const conn of [...this.connections]) {
+        if (conn.lastPongAt < deadline) {
+          this.dropConnection(conn);
+          continue;
+        }
         try {
           this.sendFrame(conn.socket, Buffer.alloc(0), 0x9); // ping
         } catch {
@@ -195,7 +208,7 @@ export class ProgressBroadcaster {
       ].join('\r\n'),
     );
 
-    const conn: WsConnection = { socket, closed: false };
+    const conn: WsConnection = { socket, closed: false, lastPongAt: Date.now() };
     this.connections.add(conn);
 
     // 回放历史事件 → 再发 connected（附录协议）
@@ -215,6 +228,7 @@ export class ProgressBroadcaster {
    * 仅处理控制帧：close(0x8) / ping(0x9) / pong(0xA)；业务上行暂不需要
    */
   private handleData(conn: WsConnection, chunk: Buffer): void {
+    conn.lastPongAt = Date.now(); // 任何入站帧都证明对端存活
     let offset = 0;
     while (offset + 2 <= chunk.length) {
       const opcode = chunk[offset]! & 0x0f;

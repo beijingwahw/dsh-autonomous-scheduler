@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>认知生态能量流 Sankey</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 28px 20px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .meta { color: #64748b; font-size: 12.5px; margin-bottom: 14px; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .kpi { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 14px; min-width: 118px; }
+  .kpi b { display: block; font-size: 17px; margin-top: 2px; }
+  .kpi span { font-size: 11.5px; color: #64748b; }
+  .badge { font-size: 11.5px; border-radius: 999px; padding: 3px 10px; border: 1px solid #e2e8f0; background: #fff; }
+  .badge.ok { color: #047857; border-color: #a7f3d0; }
+  .badge.bad { color: #b91c1c; border-color: #fecaca; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-top: 18px; overflow-x: auto; }
+  svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 10px 4px 0; font-size: 12px; color: #475569; }
+  .lg i { display: inline-block; width: 18px; height: 5px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #f1f5f9; }
+  th { color: #64748b; font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code { background: #f1f5f9; border-radius: 4px; padding: 1px 5px; font-size: 11.5px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 980px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>认知生态能量流 Sankey</h1>
+  <div class="meta">生成于 2026-08-16T17:17:23.001Z｜凭证 #1–#17｜17 笔流转聚合</div>
+  <div class="kpis">
+    <div class="kpi"><span>总供给</span><b>10039</b></div>
+    <div class="kpi"><span>流通量</span><b>9985</b></div>
+    <div class="kpi"><span>累计铸币</span><b>39.0</b></div>
+    <div class="kpi"><span>累计燃烧</span><b>54.0</b></div>
+    <div class="kpi"><span>基尼系数</span><b>0.384</b></div>
+    <div class="kpi"><span>健康</span><b><span class="badge ok">守恒 ✓</span>
+    <span class="badge ok">链哈希 ✓</span></b></div>
+  </div>
+  <div class="card"><svg viewBox="0 0 1280 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="能量 Sankey 图">
+    <g>
+    <path d="M 362 310 C 497 310, 497 476.6666666666667, 632 476.6666666666667" fill="none" stroke="#8b5cf6" stroke-width="34.0" stroke-opacity="0.38"><title>treasury → agent-memory｜开业注资：100.0 能量（1 笔）</title></path>
+    <path d="M 362 310 C 497 310, 497 310, 632 310" fill="none" stroke="#8b5cf6" stroke-width="34.0" stroke-opacity="0.38"><title>treasury → agent-optimizer｜开业注资：100.0 能量（1 笔）</title></path>
+    <path d="M 362 310 C 497 310, 497 143.33333333333331, 632 143.33333333333331" fill="none" stroke="#8b5cf6" stroke-width="34.0" stroke-opacity="0.38"><title>treasury → agent-evolver｜开业注资：100.0 能量（1 笔）</title></path>
+    <path d="M 648 143.33333333333331 C 783 143.33333333333331, 783 185, 918 185" fill="none" stroke="#ef4444" stroke-width="17.0" stroke-opacity="0.38"><title>agent-evolver → escrow｜行动预扣：50.0 能量（1 笔）</title></path>
+    <path d="M 934 185 C 1069 185, 1069 310, 1204 310" fill="none" stroke="#ef4444" stroke-width="17.0" stroke-opacity="0.38"><title>escrow → burn｜成本燃烧：50.0 能量（1 笔）</title></path>
+    <path d="M 76 310 C 354 310, 354 476.6666666666667, 632 476.6666666666667" fill="none" stroke="#10b981" stroke-width="7.5" stroke-opacity="0.38"><title>(mint) → agent-memory｜任务分红铸币：22.0 能量（1 笔）</title></path>
+    <path d="M 648 310 C 640 578.2266666666667, 640 578.2266666666667, 632 476.6666666666667" fill="none" stroke="#3b82f6" stroke-width="5.8" stroke-opacity="0.38"><title>agent-optimizer → agent-memory｜知识成交：17.0 能量（2 笔）</title></path>
+    <path d="M 76 310 C 354 310, 354 310, 632 310" fill="none" stroke="#10b981" stroke-width="5.8" stroke-opacity="0.38"><title>(mint) → agent-optimizer｜任务分红铸币：17.0 能量（1 笔）</title></path>
+    <path d="M 648 310 C 640 408.16, 640 408.16, 632 143.33333333333331" fill="none" stroke="#3b82f6" stroke-width="4.1" stroke-opacity="0.38"><title>agent-optimizer → agent-evolver｜知识成交：12.0 能量（1 笔）</title></path>
+    <path d="M 934 435 C 783 530.6560809933692, 783 530.6560809933692, 632 310" fill="none" stroke="#f59e0b" stroke-width="2.8" stroke-opacity="0.38"><title>belief-pool → agent-optimizer｜信念赔付：8.3 能量（1 笔）</title></path>
+    <path d="M 648 310 C 783 310, 783 435, 918 435" fill="none" stroke="#f59e0b" stroke-width="1.9" stroke-opacity="0.38"><title>agent-optimizer → belief-pool｜信念下注：5.5 能量（1 笔）</title></path>
+    <path d="M 362 310 C 640 310, 640 435, 918 435" fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-opacity="0.38"><title>treasury → belief-pool｜结算补贴：2.8 能量（1 笔）</title></path>
+    <path d="M 648 476.6666666666667 C 926 476.6666666666667, 926 310, 1204 310" fill="none" stroke="#3b82f6" stroke-width="1.5" stroke-opacity="0.38"><title>agent-memory → burn｜知识上架费：2.0 能量（2 笔）</title></path>
+    <path d="M 648 143.33333333333331 C 926 143.33333333333331, 926 310, 1204 310" fill="none" stroke="#3b82f6" stroke-width="1.5" stroke-opacity="0.38"><title>agent-evolver → burn｜知识上架费：2.0 能量（1 笔）</title></path>
+    <path d="M 934 435 C 640 528, 640 528, 346 310" fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-opacity="0.38"><title>belief-pool → treasury｜盈余清扫：0.0 能量（1 笔）</title></path>
+    </g>
+    <g>
+    <rect x="60.0" y="210.0" width="16" height="200.0" rx="3" fill="#1e293b"><title>铸币源（(mint)）｜余额 39.0｜流入 0.0 / 流出 39.0</title></rect>
+      <text x="82.0" y="308.0" text-anchor="start" font-size="12" fill="#334155" font-weight="600">铸币源</text>
+      <text x="82.0" y="322.0" text-anchor="start" font-size="10.5" fill="#94a3b8">余 39.0｜流 0.0/39.0</text>
+    <rect x="346.0" y="210.0" width="16" height="200.0" rx="3" fill="#1e293b"><title>央行国库（treasury）｜余额 9697｜流入 0.0 / 流出 302.8</title></rect>
+      <text x="368.0" y="308.0" text-anchor="start" font-size="12" fill="#334155" font-weight="600">央行国库</text>
+      <text x="368.0" y="322.0" text-anchor="start" font-size="10.5" fill="#94a3b8">余 9697｜流 0.0/302.8</text>
+    <rect x="632.0" y="101.7" width="16" height="83.3" rx="3" fill="#1e293b"><title>agent-evolver（evolver）（agent-evolver）｜余额 60.0｜流入 112.0 / 流出 52.0</title></rect>
+      <text x="654.0" y="141.3" text-anchor="start" font-size="12" fill="#334155" font-weight="600">agent-evolver（evolver）</text>
+      <text x="654.0" y="155.3" text-anchor="start" font-size="10.5" fill="#94a3b8">余 60.0｜流 112.0/52.0</text>
+    <rect x="632.0" y="263.4" width="16" height="93.2" rx="3" fill="#1e293b"><title>agent-optimizer（optimizer）（agent-optimizer）｜余额 90.8｜流入 125.3 / 流出 34.5</title></rect>
+      <text x="654.0" y="308.0" text-anchor="start" font-size="12" fill="#334155" font-weight="600">agent-optimizer（optimizer）</text>
+      <text x="654.0" y="322.0" text-anchor="start" font-size="10.5" fill="#94a3b8">余 90.8｜流 125.3/34.5</text>
+    <rect x="632.0" y="425.0" width="16" height="103.3" rx="3" fill="#1e293b"><title>agent-memory（memory）（agent-memory）｜余额 137.0｜流入 139.0 / 流出 2.0</title></rect>
+      <text x="654.0" y="474.7" text-anchor="start" font-size="12" fill="#334155" font-weight="600">agent-memory（memory）</text>
+      <text x="654.0" y="488.7" text-anchor="start" font-size="10.5" fill="#94a3b8">余 137.0｜流 139.0/2.0</text>
+    <rect x="918.0" y="107.5" width="16" height="155.0" rx="3" fill="#1e293b"><title>行动托管（escrow）｜余额 0.0｜流入 50.0 / 流出 50.0</title></rect>
+      <text x="912.0" y="183.0" text-anchor="end" font-size="12" fill="#334155" font-weight="600">行动托管</text>
+      <text x="912.0" y="197.0" text-anchor="end" font-size="10.5" fill="#94a3b8">余 0.0｜流 50.0/50.0</text>
+    <rect x="918.0" y="422.1" width="16" height="25.8" rx="3" fill="#1e293b"><title>信念资金池（belief-pool）｜余额 0.0｜流入 8.3 / 流出 8.3</title></rect>
+      <text x="912.0" y="433.0" text-anchor="end" font-size="12" fill="#334155" font-weight="600">信念资金池</text>
+      <text x="912.0" y="447.0" text-anchor="end" font-size="10.5" fill="#94a3b8">余 0.0｜流 8.3/8.3</text>
+    <rect x="1204.0" y="210.0" width="16" height="200.0" rx="3" fill="#1e293b"><title>燃烧池（burn）｜余额 54.0｜流入 54.0 / 流出 0.0</title></rect>
+      <text x="1198.0" y="308.0" text-anchor="end" font-size="12" fill="#334155" font-weight="600">燃烧池</text>
+      <text x="1198.0" y="322.0" text-anchor="end" font-size="10.5" fill="#94a3b8">余 54.0｜流 54.0/0.0</text>
+    </g>
+  </svg>
+  <div class="legend"><span class="lg"><i style="background:#8b5cf6"></i>能量分发</span><span class="lg"><i style="background:#10b981"></i>价值铸币</span><span class="lg"><i style="background:#3b82f6"></i>知识市场</span><span class="lg"><i style="background:#f59e0b"></i>信念市场</span><span class="lg"><i style="background:#ef4444"></i>行动经济</span><span class="lg"><i style="background:#94a3b8"></i>其他</span></div></div>
+  <div class="grid2">
+    <div class="card"><h2 style="font-size:15px;margin:0 0 10px">渠道明细</h2><table><thead><tr><th>渠道</th><th>reason</th><th>能量</th><th>笔数</th></tr></thead><tbody><tr><td>开业注资</td><td><code>opening-grant</code></td><td class="num">300.0</td><td class="num">3</td></tr><tr><td>行动预扣</td><td><code>action-escrow</code></td><td class="num">50.0</td><td class="num">1</td></tr><tr><td>成本燃烧</td><td><code>action-cost</code></td><td class="num">50.0</td><td class="num">1</td></tr><tr><td>任务分红铸币</td><td><code>task-dividend</code></td><td class="num">39.0</td><td class="num">2</td></tr><tr><td>知识成交</td><td><code>market-trade</code></td><td class="num">29.0</td><td class="num">3</td></tr><tr><td>信念赔付</td><td><code>belief-payout</code></td><td class="num">8.3</td><td class="num">1</td></tr><tr><td>信念下注</td><td><code>belief-buy</code></td><td class="num">5.5</td><td class="num">1</td></tr><tr><td>知识上架费</td><td><code>listing-fee</code></td><td class="num">4.0</td><td class="num">3</td></tr><tr><td>结算补贴</td><td><code>belief-subsidy</code></td><td class="num">2.8</td><td class="num">1</td></tr><tr><td>盈余清扫</td><td><code>belief-sweep</code></td><td class="num">0.0</td><td class="num">1</td></tr></tbody></table></div>
+    <div class="card"><h2 style="font-size:15px;margin:0 0 10px">账户余额</h2><table><thead><tr><th>账户</th><th>id</th><th>余额</th><th>流入</th><th>流出</th></tr></thead><tbody><tr><td>央行国库</td><td><code>treasury</code></td><td class="num">9697</td><td class="num">0.0</td><td class="num">302.8</td></tr><tr><td>agent-memory（memory）</td><td><code>agent-memory</code></td><td class="num">137.0</td><td class="num">139.0</td><td class="num">2.0</td></tr><tr><td>agent-optimizer（optimizer）</td><td><code>agent-optimizer</code></td><td class="num">90.8</td><td class="num">125.3</td><td class="num">34.5</td></tr><tr><td>agent-evolver（evolver）</td><td><code>agent-evolver</code></td><td class="num">60.0</td><td class="num">112.0</td><td class="num">52.0</td></tr><tr><td>燃烧池</td><td><code>burn</code></td><td class="num">54.0</td><td class="num">54.0</td><td class="num">0.0</td></tr><tr><td>铸币源</td><td><code>(mint)</code></td><td class="num">39.0</td><td class="num">0.0</td><td class="num">39.0</td></tr><tr><td>行动托管</td><td><code>escrow</code></td><td class="num">0.0</td><td class="num">50.0</td><td class="num">50.0</td></tr><tr><td>信念资金池</td><td><code>belief-pool</code></td><td class="num">0.0</td><td class="num">8.3</td><td class="num">8.3</td></tr></tbody></table></div>
+  </div>
+</div>
+</body>
+</html>

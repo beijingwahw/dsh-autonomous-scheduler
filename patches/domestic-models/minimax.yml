@@ -1,19 +1,21 @@
 # MiniMax — cordis patch（国产模型）
 # Key 由 DSH 自动注入请求头：在 Web UI 或环境变量 MINIMAX_API_KEY 中配置即可，本文件不含任何密钥。
-# 用法：将本文件内容合并进 cordis.yml，或经 DSH patch 机制加载。
-- name: dsh-autonomous-scheduler
-  config:
-    strategistModel:
-      id: abab6.5s-chat
-      endpoint: https://api.minimax.chat/v1
-    models:
-      - id: abab6.5s-chat
-        endpoint: https://api.minimax.chat/v1
-        timeout: 60000
-        maxConcurrency: 3
-        costPerKToken: 0.005
-        contextWindow: 245760
-        initialCapabilities:
-          taskScores:
-            general: 0.7
-            documentation: 0.7
+# 用法：将本文件作为 --patch overlay 加载，或合并进 profile 的 cordis.patch.yml。
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        strategistModel:
+          id: abab6.5s-chat
+          endpoint: https://api.minimax.chat/v1
+        models:
+          - id: abab6.5s-chat
+            endpoint: https://api.minimax.chat/v1
+            timeout: 60000
+            maxConcurrency: 3
+            costPerKToken: 0.005
+            contextWindow: 245760
+            initialCapabilities:
+              taskScores:
+                general: 0.7
+                documentation: 0.7

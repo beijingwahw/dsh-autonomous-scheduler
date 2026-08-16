@@ -94,11 +94,29 @@ export const DEFAULT_WORLD_MODEL_CONFIG: WorldModelConfig = {
   calibrationErrorThreshold: 2,
 };
 
+/** 世界模型摘要（运维可观测） */
+export interface WorldModelSummary {
+  trackedTypes: number;
+  totalArrivals: number;
+  types: Array<{ type: string; totalCount: number; lastSeenAt: number; recentRatePerMin: number }>;
+  correlations: TypeCorrelation[];
+  trends: Array<{ type: string; trend: 'rising' | 'falling' | 'stable'; slopePerMin: number }>;
+  calibrationError: number;
+  /** 5.0：混杂指纹（观测共现 ≠ 因果的证伪现场） */
+  confoundedPairs?: Array<{ typeA: string; typeB: string; observationalStrength: number; causalEffect: number; divergence: number }>;
+}
+
 /**
  * 世界模型
  *
  * 被 index.ts 持有：哨兵每次 ingest 后调用 observeArrival() 增量学习；
  * 心跳循环定期调用 predictArrivals() 获取前瞻预测，detectTrends() 产出负载预警。
+ *
+ * 5.0 质变（因果升级）：挂载 CausalKernel 后，本模型从「相关性预测器」
+ * 升级为「因果预见器」——predictInterventionEffect(action, kpi) 直接回答
+ * 「若我对系统实施 do(action)，目标 KPI 期望变化几何（含不确定性区间）」。
+ * 相关矩阵负责「看见规律」，因果图负责「预见干预后果」——
+ * 二者的显著背离（混杂指纹）在 getSummary() 中显式曝光。
  */
 export class WorldModel {
   private config: WorldModelConfig;
@@ -106,9 +124,57 @@ export class WorldModel {
   private calibrations: CalibrationRecord[] = [];
   /** 待校准的预测（type → 预测值，窗口结束后对账） */
   private pendingPredictions = new Map<string, { predicted: number; windowEnd: number }>();
+  /** 5.0：因果内核（可选挂载） */
+  private causal?: import('./core/causal-kernel.js').CausalKernel;
 
   constructor(config?: Partial<WorldModelConfig>) {
     this.config = { ...DEFAULT_WORLD_MODEL_CONFIG, ...config };
+  }
+
+  /**
+   * 5.0：挂载因果内核（幂等）。
+   *
+   * 挂载后：
+   * - 类型共现自动作为观测证据写入因果图（银级证据）；
+   * - predictInterventionEffect 提供因果预见（黄金口径）。
+   */
+  attachCausalKernel(kernel: import('./core/causal-kernel.js').CausalKernel): void {
+    this.causal = kernel;
+    // 把既有共现规律回灌为观测证据（一次性迁移，非逐拍重复）
+    for (const corr of this.getCorrelations(0.05)) {
+      for (let k = 0; k < Math.min(corr.coOccurrences, 20); k += 1) {
+        kernel.observe(`signal:${corr.typeA}`, `signal:${corr.typeB}`, true, true);
+      }
+    }
+  }
+
+  /**
+   * 5.0：因果预见 ——「若实施 do(action)，目标指标期望如何变化」。
+   *
+   * 与 predictArrivals 的本质区别：那是「世界自己会怎样」（外推），
+   * 这是「我们主动干预后世界会怎样」（因果阶梯第二层）。
+   * 无因果证据时诚实返回 null，而非伪装成知道。
+   */
+  predictInterventionEffect(
+    action: string,
+    targetKpi: string,
+  ): import('./core/causal-kernel.js').CausalEffect | null {
+    if (!this.causal) return null;
+    const eff = this.causal.effect(action, targetKpi);
+    if (eff.interventionalSamples + eff.observationalSamples === 0) return null;
+    return eff;
+  }
+
+  /** 5.0：登记一次真实干预（A/B 切换 / 参数实验的黄金证据） */
+  recordIntervention(
+    action: string,
+    targetKpi: string,
+    setTo: boolean,
+    observedY: boolean,
+    actor: string,
+    hypothesis?: string,
+  ): void {
+    this.causal?.intervene(action, targetKpi, setTo, observedY, actor, hypothesis);
   }
 
   /**
@@ -244,7 +310,7 @@ export class WorldModel {
   }
 
   /** 世界模型摘要 */
-  getSummary(): any {
+  getSummary(): WorldModelSummary {
     const types = [...this.stats.keys()];
     return {
       trackedTypes: types.length,
@@ -256,6 +322,20 @@ export class WorldModel {
       correlations: this.getCorrelations().slice(0, 10),
       trends: this.detectTrends().filter((t) => t.trend !== 'stable'),
       calibrationError: this.meanCalibrationError(),
+      // 5.0：混杂指纹 —— 观测共现强但因果效应弱的类型对（伪规律证伪现场）
+      confoundedPairs: this.causal
+        ? this.causal
+            .detectConfounding()
+            .filter((e) => e.from.startsWith('signal:') && e.to.startsWith('signal:'))
+            .slice(0, 5)
+            .map((e) => ({
+              typeA: e.from.replace('signal:', ''),
+              typeB: e.to.replace('signal:', ''),
+              observationalStrength: e.observationalAssociation,
+              causalEffect: e.ate,
+              divergence: e.divergence,
+            }))
+        : undefined,
     };
   }
 

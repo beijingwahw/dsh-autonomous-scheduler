@@ -116,6 +116,19 @@ const OUTCOME_VALUE: Record<string, number> = {
   failed: 0,
 };
 
+/** 决策引擎统计（运维可观测） */
+export interface DecisionEngineStats {
+  total: number;
+  ruleHits: number;
+  cacheHits: number;
+  strategistCalls: number;
+  heuristicFallbacks: number;
+  cacheSize: number;
+  cacheHitRate: number;
+  ruleHitRate: number;
+  consecutiveFailures: Record<string, number>;
+}
+
 /**
  * 战略决策引擎
  *
@@ -259,7 +272,7 @@ export class DecisionEngine {
   }
 
   /** 决策引擎运行统计 */
-  getStats(): any {
+  getStats(): DecisionEngineStats {
     return {
       ...this.stats,
       cacheSize: this.cache.size,

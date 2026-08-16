@@ -23,9 +23,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AppError } from '../errors.js';
-import type { LongTermMemory } from '../memory/long-term-memory.js';
+import { AppError, TimeoutError } from '../errors.js';
+import { LongTermMemory } from '../memory/long-term-memory.js';
 import type { CryptoEngine } from '../security/crypto-engine.js';
+import { Sentinel } from '../sentinel.js';
+import { DistributedSync } from '../sync/distributed-sync.js';
+import { RaftEngine } from '../consensus/raft-engine.js';
+import { CircuitBreakerRegistry, backoffDelayMs, classifyError } from '../core/resilience.js';
 
 /** 单次迭代结果 */
 export interface BenchmarkResult {
@@ -54,6 +58,8 @@ export interface BenchmarkScenario {
   warmupRequests: number;
   timeout: number;
   execute: (iteration: number) => Promise<BenchmarkResult>;
+  /** 场景资源回收钩子（全部迭代结束后调用一次；如关闭哨兵/Raft 服务） */
+  teardown?: () => void | Promise<void>;
 }
 
 /** 聚合统计 */
@@ -193,12 +199,14 @@ export class BenchmarkEngine {
   /**
    * 注册内置场景
    *
-   * - memory / encryption 场景直接压测真实模块（离线可运行）
-   * - strategist / executor / full-pipeline 场景依赖 context.callLLM，
+   * - memory / encryption / sentinel / executor / sync / consensus 场景直接压测
+   *   真实模块（离线可运行；executor 压测其弹性内核：熔断/退避/错误分型）
+   * - strategist / full-pipeline 场景依赖 context.callLLM，
    *   缺省时注册为"跳过型"场景（执行时立即标注 skipped 原因）
    */
   registerBuiltinScenarios(context: BuiltinScenarioContext): void {
     const { memory, cryptoEngine, callLLM, models } = context;
+    const benchStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // ── memory：记忆写入 + 模式检索压测 ──
     this.registerScenario({
@@ -249,6 +257,183 @@ export class BenchmarkEngine {
         } catch (err) {
           return { success: false, latency: Date.now() - startedAt, error: err instanceof Error ? err.message : String(err) };
         }
+      },
+    });
+
+    // ── sentinel：信号注入 + 窗口聚合去重 + 批次交付压测（离线，真实模块） ──
+    const benchSentinel = new Sentinel(
+      {
+        watchCodeChanges: false,
+        watchErrors: false,
+        watchPerformance: false,
+        aggregationWindow: 0.05,
+        maxBatchSize: 32,
+      },
+      () => {
+        /* 基准压测不消费批次 */
+      },
+    );
+    this.registerScenario({
+      name: 'sentinel-ingest-flush',
+      description: '哨兵信号注入 + 窗口聚合去重 + 批次交付',
+      target: 'sentinel',
+      concurrency: 4,
+      totalRequests: 400,
+      warmupRequests: 40,
+      timeout: 5000,
+      execute: async (iteration: number) => {
+        const startedAt = Date.now();
+        try {
+          for (let i = 0; i < 5; i += 1) {
+            benchSentinel.ingest({
+              type: i % 2 === 0 ? 'code-change' : 'error-detected',
+              description: `bench-signal-${iteration}-${i}`,
+              payload: { iteration, i },
+              source: 'bench',
+              // 同 dedupeKey 信号窗口内合并计数（聚合去重热路径）
+              dedupeKey: `bench:${iteration % 64}:${i % 2}`,
+            });
+          }
+          benchSentinel.flush('flush');
+          return { success: true, latency: Date.now() - startedAt };
+        } catch (err) {
+          return { success: false, latency: Date.now() - startedAt, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+      teardown: () => benchSentinel.stop(),
+    });
+
+    // ── executor：执行器弹性内核压测（离线；熔断探测/回报 + 指数退避 + 错误分型） ──
+    const benchBreakers = new CircuitBreakerRegistry({ failureThreshold: 5, cooldownMs: 1_000, capacity: 64 });
+    this.registerScenario({
+      name: 'executor-resilience-kernel',
+      description: '执行器弹性内核：模型级熔断探测/回报 + 全抖动退避 + 错误分型',
+      target: 'executor',
+      concurrency: 4,
+      totalRequests: 400,
+      warmupRequests: 40,
+      timeout: 5000,
+      execute: async (iteration: number) => {
+        const startedAt = Date.now();
+        try {
+          const key = `bench-model-${iteration % 8}`;
+          const probe = benchBreakers.canExecute(key);
+          if (probe.allowed) {
+            // 部分迭代制造失败，驱动熔断器 closed → open → half-open 状态迁移
+            if (iteration % 3 === 0) benchBreakers.recordFailure(key);
+            else benchBreakers.recordSuccess(key);
+          }
+          for (let attempt = 1; attempt <= 4; attempt += 1) backoffDelayMs(attempt);
+          classifyError(new TimeoutError('bench timeout'));
+          classifyError(Object.assign(new Error('bench rate limited'), { status: 429 }));
+          return { success: true, latency: Date.now() - startedAt };
+        } catch (err) {
+          return { success: false, latency: Date.now() - startedAt, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+      teardown: () => benchBreakers.reset(),
+    });
+
+    // ── sync：双节点变更登记 + 增量批次 + 对端幂等应用（离线，真实模块） ──
+    const syncNodeA = new DistributedSync(
+      'bench-node-a',
+      memory,
+      path.join(os.tmpdir(), `dsh-bench-sync-a-${benchStamp}.json`),
+      null,
+    );
+    const syncMemB = new LongTermMemory(path.join(os.tmpdir(), `dsh-bench-sync-memb-${benchStamp}.json`));
+    const syncNodeB = new DistributedSync(
+      'bench-node-b',
+      syncMemB,
+      path.join(os.tmpdir(), `dsh-bench-sync-b-${benchStamp}.json`),
+      null,
+    );
+    this.registerScenario({
+      name: 'sync-batch-roundtrip',
+      description: '分布式同步：变更登记 + 增量批次创建 + 对端哈希校验/幂等应用',
+      target: 'sync',
+      concurrency: 2,
+      totalRequests: 200,
+      warmupRequests: 20,
+      timeout: 5000,
+      execute: async (iteration: number) => {
+        const startedAt = Date.now();
+        try {
+          syncNodeA.recordChange('feedback-created', `bench-fb-${iteration}`, {
+            id: `bench-fb-${iteration}`,
+            timestamp: Date.now(),
+            signalType: 'benchmark-sync',
+            signalDescription: `sync-${iteration}`,
+            decision: 'execute',
+            outcome: 'good',
+            outcomeReason: 'benchmark synthetic',
+          });
+          const batch = syncNodeA.createBatch('bench-node-b');
+          if (batch) {
+            const result = await syncNodeB.receiveBatch(batch);
+            if (result.errors.length > 0) {
+              return { success: false, latency: Date.now() - startedAt, error: result.errors[0] };
+            }
+            syncNodeA.acknowledgePeer('bench-node-b', batch.logicalClock);
+          }
+          return { success: true, latency: Date.now() - startedAt };
+        } catch (err) {
+          return { success: false, latency: Date.now() - startedAt, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+      teardown: () => {
+        syncNodeA.stop();
+        syncNodeB.stop();
+      },
+    });
+
+    // ── consensus：单节点 Raft 提案-提交压测（离线，真实模块；端口随机防冲突） ──
+    const raftEngine = new RaftEngine({
+      localNodeId: 'bench-raft-node',
+      cluster: [],
+      electionTimeoutMin: 150,
+      electionTimeoutMax: 300,
+      heartbeatInterval: 50,
+      consensusPort: 25_000 + Math.floor(Math.random() * 20_000),
+      logPath: path.join(os.tmpdir(), `dsh-bench-raft-${benchStamp}.json`),
+    });
+    let raftStarted = false;
+    this.registerScenario({
+      name: 'consensus-single-node-propose',
+      description: '共识引擎：单节点集群提案 → 日志追加 → 多数派（自身）提交',
+      target: 'consensus',
+      concurrency: 1,
+      totalRequests: 100,
+      warmupRequests: 10,
+      timeout: 5000,
+      execute: async (iteration: number) => {
+        const startedAt = Date.now();
+        try {
+          if (!raftStarted) {
+            raftEngine.start(); // 单节点集群启动即成为 leader
+            raftStarted = true;
+          }
+          const result = await raftEngine.propose(
+            {
+              type: 'execute-plan',
+              signalId: `bench-sig-${iteration}`,
+              signalDescription: `consensus bench ${iteration}`,
+              decision: null,
+              proposedBy: 'bench-raft-node',
+            },
+            3000,
+          );
+          return {
+            success: result.committed,
+            latency: Date.now() - startedAt,
+            error: result.committed ? undefined : '提案未提交',
+          };
+        } catch (err) {
+          return { success: false, latency: Date.now() - startedAt, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+      teardown: () => {
+        raftEngine.stop();
       },
     });
 
@@ -331,24 +516,30 @@ export class BenchmarkEngine {
     let done = 0;
     let peakMemoryMB = 0;
 
-    const startedAt = Date.now();
+    // 高精度计时：Date.now() 整毫秒在亚毫秒负载下差值为 0，吞吐被误判为 0
+    const startedAt = performance.now();
     let cursor = 0;
 
     // 并发池 worker
     const worker = async (): Promise<void> => {
       while (cursor < total) {
         const iteration = cursor++;
-        const isWarmup = iteration >= scenario.totalRequests;
+        // 预热在前：前 warmupRequests 次迭代为 JIT/缓存预热，不计入
+        // 统计——预热放末尾会让被测段恰为冷启动，p95/p99 虚高
+        const isWarmup = iteration < scenario.warmupRequests;
         let result: BenchmarkResult;
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
         try {
           result = await Promise.race<BenchmarkResult>([
             scenario.execute(iteration),
-            new Promise<BenchmarkResult>((_, reject) =>
-              setTimeout(() => reject(new Error(`scenario timeout after ${scenario.timeout}ms`)), scenario.timeout),
-            ),
+            new Promise<BenchmarkResult>((_, reject) => {
+              timeoutId = setTimeout(() => reject(new Error(`scenario timeout after ${scenario.timeout}ms`)), scenario.timeout);
+            }),
           ]);
         } catch (err) {
           result = { success: false, latency: 0, error: err instanceof Error ? err.message : String(err) };
+        } finally {
+          clearTimeout(timeoutId); // 成功路径及时清 timer，防海量悬挂定时器
         }
 
         if (!isWarmup) {
@@ -369,7 +560,14 @@ export class BenchmarkEngine {
     };
 
     await Promise.all(Array.from({ length: Math.max(1, scenario.concurrency) }, () => worker()));
-    const totalDuration = Date.now() - startedAt;
+    const totalDuration = performance.now() - startedAt;
+
+    // 场景资源回收（失败不阻断报告生成）
+    try {
+      await scenario.teardown?.();
+    } catch {
+      /* teardown 失败忽略 */
+    }
 
     const stats = this.computeStats(latencies, successCount, failCount, errors, totalDuration, peakMemoryMB);
     const latencyDistribution = this.buildDistribution(latencies);
