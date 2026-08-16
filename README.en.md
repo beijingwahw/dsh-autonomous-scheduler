@@ -30,6 +30,8 @@ graph LR
   R -->|Insights| L[Autonomy Loop<br/>Goals / Meta-cognition / Evolution]
   L -->|Generated Goals| D
   L --> P[Three Pillars<br/>World Model · Curiosity · Safety Governor]
+  P ~~~ PAD["　　　　　　　　"]
+  style PAD fill:none,stroke:none,color:transparent
 ```
 
 ## Core Features

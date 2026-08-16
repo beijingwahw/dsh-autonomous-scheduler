@@ -29,6 +29,8 @@ graph LR
   R -->|洞察| L[自主循环<br/>目标/元认知/进化]
   L -->|生成目标| D
   L --> P[三支柱<br/>世界模型·好奇心·安全治理]
+  P ~~~ PAD["　　　　　　　　"]
+  style PAD fill:none,stroke:none,color:transparent
 ```
 
 ## 核心特性
