@@ -15,7 +15,7 @@
  * 9. 级联触发（节点完成触发下游信号，回注 Sentinel）
  * 10. 经验沉淀（成功方案 / 失败记录写入长期记忆 + 分布式同步变更登记）
  *
- * 13 个 Tool 通过 ToolRegistry 服务注册并经 ctx.provide('schedulerTools') 暴露。
+ * 14 个 Tool 通过 ToolRegistry 服务注册并经 ctx.provide('schedulerTools') 暴露。
  * 自主智能层（目标引擎 / 元认知 / 策略进化 / 心跳循环）使系统在无外部信号时
  * 也能自我观察、自我改进、自我进化。
  * 全部资源在 fiber 卸载时按依赖逆序清理（cleanup）。
@@ -256,7 +256,7 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
   const hostModels = resolveHostModels(ctx);
   // 请求头注入优先级：DSH 宿主 ctx 注入 > 宿主本地密钥自动填入（环境变量/本地配置，健康感知路由）
   const ctxHeaderProvider = resolveHeaderProvider(ctx);
-  const keyHealth = new KeyHealthManager();
+  const keyHealth = new KeyHealthManager(60_000, path.join(path.dirname(cfg.experienceStorePath), 'key-order.json'));
   const localKeyProvider = resolveLocalKeyProvider(keyHealth);
   const headerProvider = (modelId: string, keyAttempt = 0) =>
     (keyAttempt === 0 ? ctxHeaderProvider?.(modelId) : undefined) ?? localKeyProvider(modelId, keyAttempt);
@@ -932,6 +932,7 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
         case 'keys':
           return {
             health: keyHealth.status(),
+            userOrder: keyHealth.getKeyOrder(),
             sources: Object.fromEntries(mergedModels.map((m) => [m.id, describeKeySources(m.id)])),
           };
         case 'introspect':
@@ -1241,6 +1242,38 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
           return { circuitState: governor.getCircuitState() };
         case 'introspect':
           return { introspection: autonomyLoop.introspect() };
+        default:
+          throw new ToolError(`未知 action: ${args.action}`);
+      }
+    },
+  });
+
+  // 14. manage_keys — 密钥管理（查看健康状态 / 调整密钥顺序）
+  tools.register({
+    name: 'manage_keys',
+    description: '密钥管理：查看各密钥来源健康状态，或调整多密钥的使用顺序（持久化，重启保留）',
+    parameters: {
+      action: { type: 'string', description: '密钥动作', required: true, enum: ['list', 'set-order', 'clear-order'] },
+      order: { type: 'array', description: 'set-order 的密钥来源顺序（如 ["local-config", "env:DASHSCOPE_API_KEY"]，靠前优先）' },
+    },
+    handler: (args) => {
+      switch (args.action) {
+        case 'list':
+          return {
+            health: keyHealth.status(),
+            userOrder: keyHealth.getKeyOrder(),
+            sources: Object.fromEntries(mergedModels.map((m) => [m.id, describeKeySources(m.id)])),
+          };
+        case 'set-order': {
+          if (!Array.isArray(args.order) || args.order.length === 0) {
+            throw new ToolError('set-order 需要非空的 order 数组（密钥来源标识列表）');
+          }
+          keyHealth.setKeyOrder(args.order);
+          return { userOrder: keyHealth.getKeyOrder() };
+        }
+        case 'clear-order':
+          keyHealth.clearKeyOrder();
+          return { userOrder: [], restored: '默认顺序（环境变量序 → 本地配置）' };
         default:
           throw new ToolError(`未知 action: ${args.action}`);
       }

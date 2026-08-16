@@ -18,6 +18,7 @@
 
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { ChatMessage, ChatOptions, LLMResponse, ModelConfig } from './llm-client.js';
 
@@ -310,7 +311,8 @@ export interface KeyHealthStatus {
 
 /**
  * 密钥健康管理器：把"顺序轮换"升级为"健康感知路由"。
- * - 选择策略：优先未冷却 → 失败次数少 → 成功次数多；
+ * - 用户顺序：用户可通过 setKeyOrder 指定密钥来源优先级（持久化，重启保留）；
+ * - 选择策略：用户序优先 → 冷却规避 → 失败次数少 → 成功次数多；
  * - 冷却策略：429（配额/限流）冷却 1 分钟，401/403（认证）冷却 5 分钟；
  * - 成功即清零失败计数并解除冷却；
  * - 并发安全：按 (modelId, attempt) 记录每次选择，失败结果精确归因到所用密钥。
@@ -318,8 +320,50 @@ export interface KeyHealthStatus {
 export class KeyHealthManager {
   private health = new Map<string, KeyHealthStatus & { cooldownUntil: number }>();
   private lastPicks = new Map<string, string>();
+  /** 用户自定义密钥来源优先级（来源标识数组，靠前优先） */
+  private userOrder: string[] = [];
+  private persistPath?: string;
 
-  constructor(private readonly cooldownMs = 60_000) {}
+  constructor(private readonly cooldownMs = 60_000, persistPath?: string) {
+    this.persistPath = persistPath;
+    if (persistPath) this.loadOrder();
+  }
+
+  /** 设置用户密钥顺序（持久化） */
+  setKeyOrder(order: string[]): void {
+    this.userOrder = [...order];
+    this.saveOrder();
+  }
+
+  /** 获取当前用户密钥顺序 */
+  getKeyOrder(): string[] {
+    return [...this.userOrder];
+  }
+
+  /** 清除用户顺序，恢复默认（环境变量序 → 本地配置） */
+  clearKeyOrder(): void {
+    this.userOrder = [];
+    this.saveOrder();
+  }
+
+  private loadOrder(): void {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.persistPath!, 'utf8'));
+      if (Array.isArray(parsed.order)) this.userOrder = parsed.order.filter((s: unknown) => typeof s === 'string');
+    } catch {
+      /* 首次启动或文件损坏，使用默认顺序 */
+    }
+  }
+
+  private saveOrder(): void {
+    if (!this.persistPath) return;
+    try {
+      fs.mkdirSync(path.dirname(this.persistPath), { recursive: true });
+      fs.writeFileSync(this.persistPath, JSON.stringify({ order: this.userOrder }, null, 2));
+    } catch {
+      /* 持久化失败不影响运行时顺序 */
+    }
+  }
 
   private entry(source: string): KeyHealthStatus & { cooldownUntil: number } {
     let e = this.health.get(source);
@@ -330,7 +374,7 @@ export class KeyHealthManager {
     return e;
   }
 
-  /** 为某次调用选择最优候选密钥（attempt>0 时排除上一次刚失败的来源） */
+  /** 为某次调用选择最优候选密钥（用户序优先，冷却规避；attempt>0 时排除上一次刚失败的来源） */
   pick(
     modelId: string,
     attempt: number,
@@ -340,9 +384,14 @@ export class KeyHealthManager {
     const now = Date.now();
     const prev = attempt > 0 ? this.lastPicks.get(`${modelId}#${attempt - 1}`) : undefined;
 
+    const orderIndex = (source: string) => {
+      const idx = this.userOrder.indexOf(source);
+      return idx === -1 ? this.userOrder.length : idx;
+    };
     const scored = candidates.map((c) => ({ ...c, h: this.entry(c.source) }));
+    // 综合排序：冷却中最后 → 用户序靠前 → 失败少 → 成功多
     const rank = (x: (typeof scored)[number]) =>
-      (x.h.cooldownUntil <= now ? 0 : 1) * 1000 + x.h.failures - Math.min(x.h.successes, 100) / 1000;
+      (x.h.cooldownUntil <= now ? 0 : 1) * 10_000 + orderIndex(x.source) * 100 + x.h.failures - Math.min(x.h.successes, 100) / 1000;
     const rotated = scored.filter((c) => c.source !== prev);
     const pool = rotated.length > 0 ? rotated : scored;
     pool.sort((a, b) => rank(a) - rank(b));
