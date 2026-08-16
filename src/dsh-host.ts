@@ -205,37 +205,88 @@ function findApiKeyInConfig(obj: any, modelId: string): string | undefined {
   return undefined;
 }
 
-/** 读取并缓存本地配置文件（只读一次，失败静默） */
+/** 本地配置文件发现/缓存状态（支持热更新：mtime 变化自动重读） */
 let localConfigCache: any | null | undefined;
-function loadLocalConfig(): any | null {
-  if (localConfigCache !== undefined) return localConfigCache;
+let localConfigPath: string | null | undefined;
+let localConfigMtime = 0;
+let localConfigMissAt = 0;
+/** 未找到配置文件时的重新探测间隔（Web UI 后续写入也能被感知） */
+const LOCAL_CONFIG_RETRY_MS = 60_000;
+
+/** 探测首个可读的本地配置文件路径 */
+function discoverLocalConfigPath(): string | null {
   for (const rawPath of LOCAL_CONFIG_PATHS) {
     const filePath = rawPath.startsWith('~') ? rawPath.replace('~', os.homedir()) : rawPath;
     try {
-      localConfigCache = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      return localConfigCache;
+      fs.accessSync(filePath, fs.constants.R_OK);
+      return filePath;
     } catch {
-      /* 路径不存在或解析失败，继续下一个 */
+      /* 路径不存在，继续下一个 */
     }
   }
-  localConfigCache = null;
   return null;
+}
+
+/** 读取本地配置文件（mtime 热更新 + 缺失时定期重探测，失败静默） */
+function loadLocalConfig(): any | null {
+  const now = Date.now();
+  if (localConfigPath === undefined) {
+    localConfigPath = discoverLocalConfigPath();
+    if (!localConfigPath) localConfigMissAt = now;
+  } else if (!localConfigPath && now - localConfigMissAt > LOCAL_CONFIG_RETRY_MS) {
+    localConfigPath = discoverLocalConfigPath();
+    if (!localConfigPath) localConfigMissAt = now;
+  }
+  if (!localConfigPath) return localConfigCache ?? null;
+  try {
+    const stat = fs.statSync(localConfigPath);
+    if (localConfigCache === undefined || stat.mtimeMs !== localConfigMtime) {
+      localConfigCache = JSON.parse(fs.readFileSync(localConfigPath, 'utf8'));
+      localConfigMtime = stat.mtimeMs;
+    }
+    return localConfigCache;
+  } catch {
+    localConfigPath = undefined; // 文件被删/不可读，下次重新探测
+    return localConfigCache ?? null;
+  }
+}
+
+/**
+ * 本地密钥候选列表（按优先级排序，支持多密钥故障转移）：
+ * 1. 进程环境变量（按模型 id 前缀匹配厂商，多个候选变量依次排列）；
+ * 2. DSH 本地配置文件（~/.dsh/config.json 等，用户在 Web UI 配置的落盘位置）。
+ * @returns 带来源标记的密钥候选数组（可能为空）
+ */
+export function resolveLocalKeyCandidates(modelId: string): Array<{ source: string; key: string }> {
+  const candidates: Array<{ source: string; key: string }> = [];
+  const rule = VENDOR_ENV_VARS.find((r) => r.match.test(modelId));
+  if (rule) {
+    for (const envVar of rule.envVars) {
+      const value = process.env[envVar];
+      if (value) candidates.push({ source: `env:${envVar}`, key: value });
+    }
+  }
+  const fileKey = findApiKeyInConfig(loadLocalConfig(), modelId);
+  if (fileKey) candidates.push({ source: 'local-config', key: fileKey });
+  return candidates;
 }
 
 /**
  * 本地密钥提供器：自动从宿主本地来源读取 Key 并填入 Authorization 请求头。
- * 查找顺序（首个命中即用）：
- * 1. 进程环境变量（按模型 id 前缀匹配厂商，如 DEEPSEEK_API_KEY）；
- * 2. DSH 本地配置文件（~/.dsh/config.json 等，用户在 Web UI 配置的落盘位置）。
- * 密钥只进内存、不落盘、不打印日志。
- * @returns 按 modelId 返回请求头的函数；无任何本地来源时仍返回函数（返回 undefined 头）
+ * keyAttempt 用于故障转移：认证/配额失败时 LLMClient 递增 attempt，
+ * 自动切换到下一个候选密钥。密钥只进内存、不落盘、不打印日志。
+ * @returns 按 (modelId, keyAttempt) 返回请求头的函数
  */
-export function resolveLocalKeyProvider(): (modelId: string) => Record<string, string> | undefined {
-  return (modelId) => {
-    const envKey = envKeyForModel(modelId);
-    if (envKey) return { Authorization: `Bearer ${envKey}` };
-    const fileKey = findApiKeyInConfig(loadLocalConfig(), modelId);
-    if (fileKey) return { Authorization: `Bearer ${fileKey}` };
-    return undefined;
+export function resolveLocalKeyProvider(): (modelId: string, keyAttempt?: number) => Record<string, string> | undefined {
+  return (modelId, keyAttempt = 0) => {
+    const candidates = resolveLocalKeyCandidates(modelId);
+    if (candidates.length === 0) return undefined;
+    const pick = candidates[Math.min(keyAttempt, candidates.length - 1)];
+    return { Authorization: `Bearer ${pick.key}` };
   };
+}
+
+/** 密钥来源可观测性：返回某模型可用的密钥来源标识（不含密钥值） */
+export function describeKeySources(modelId: string): string[] {
+  return resolveLocalKeyCandidates(modelId).map((c) => c.source);
 }

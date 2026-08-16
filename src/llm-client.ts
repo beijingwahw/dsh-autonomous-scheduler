@@ -64,9 +64,10 @@ export interface LLMClientConfig {
   /**
    * DSH 宿主请求头注入器：返回的头部会合并进每次模型调用
    * （如 Authorization），使插件无需在配置中持有 API Key。
-   * 可按 modelId 返回不同厂商的 Key 头。
+   * keyAttempt 用于多密钥故障转移：认证/配额失败时递增，
+   * 注入器可据此轮换到下一个候选密钥。
    */
-  headerProvider?: (modelId: string) => Record<string, string> | undefined;
+  headerProvider?: (modelId: string, keyAttempt?: number) => Record<string, string> | undefined;
   /**
    * DSH 宿主 LLM 客户端调用器：存在时所有模型调用委托给宿主客户端
    * （经 ctx 获取的已配置客户端），本客户端仅保留并发控制/统计/重试外壳。
@@ -159,6 +160,9 @@ interface ModelState {
 
 /** 可重试的 HTTP 状态码 */
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+
+/** 触发密钥轮换的状态码（认证失败 / 配额耗尽） */
+const KEY_ROTATABLE_STATUS = new Set([401, 403, 429]);
 
 /**
  * OpenAI 兼容 LLM 客户端
@@ -324,10 +328,11 @@ export class LLMClient {
     state.active = Math.max(0, state.active - 1);
   }
 
-  /** 带重试的调用主循环 */
+  /** 带重试的调用主循环（含多密钥故障转移） */
   private async chatWithRetry(state: ModelState, messages: ChatMessage[], options: ChatOptions): Promise<LLMResponse> {
     const maxRetries = options.maxRetries ?? this.config.maxRetries;
     let lastError: Error | null = null;
+    let keyAttempt = 0;
 
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       if (attempt > 0) {
@@ -337,25 +342,29 @@ export class LLMClient {
       try {
         const response = this.config.externalChat
           ? await this.config.externalChat(state.config.id, messages, options)
-          : await this.chatOnce(state, messages, options);
+          : await this.chatOnce(state, messages, options, keyAttempt);
         response.retries = attempt;
         state.totalTokensUsed += response.tokensUsed;
         state.totalCost += response.cost;
         return response;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        // 认证/配额失败且存在多个候选密钥时，轮换密钥重试
+        if (err instanceof LLMError && err.status !== undefined && KEY_ROTATABLE_STATUS.has(err.status)) {
+          keyAttempt += 1;
+        }
         const retryable =
           err instanceof TimeoutError ||
           err instanceof NetworkError ||
-          (err instanceof LLMError && err.retryable);
+          (err instanceof LLMError && (err.retryable || (err.status !== undefined && KEY_ROTATABLE_STATUS.has(err.status))));
         if (!retryable || attempt >= maxRetries) break;
       }
     }
     throw lastError ?? new LLMError(`模型 ${state.config.id} 调用失败`);
   }
 
-  /** 单次 HTTP 调用（含超时控制） */
-  private async chatOnce(state: ModelState, messages: ChatMessage[], options: ChatOptions): Promise<LLMResponse> {
+  /** 单次 HTTP 调用（含超时控制；keyAttempt 用于多密钥轮换） */
+  private async chatOnce(state: ModelState, messages: ChatMessage[], options: ChatOptions, keyAttempt = 0): Promise<LLMResponse> {
     const { config } = state;
     const timeout = options.timeout ?? this.config.timeout;
     const url = buildCompletionsUrl(config.endpoint);
@@ -375,7 +384,7 @@ export class LLMClient {
       // 使 DSH 经 ctx 注入的 Key 覆盖本地配置）
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
-      const hostHeaders = this.config.headerProvider?.(config.id);
+      const hostHeaders = this.config.headerProvider?.(config.id, keyAttempt);
       if (hostHeaders) Object.assign(headers, hostHeaders);
 
       const res = await this.fetchImpl(url, {

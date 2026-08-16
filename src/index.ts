@@ -48,7 +48,7 @@ import { AutonomyLoop } from './autonomy-loop.js';
 import { WorldModel } from './world-model.js';
 import { CuriosityEngine, type ExplorationProposal } from './curiosity-engine.js';
 import { SafetyGovernor } from './safety-governor.js';
-import { resolveHostLLM, resolveHostModels, resolveHeaderProvider, resolveLocalKeyProvider } from './dsh-host.js';
+import { resolveHostLLM, resolveHostModels, resolveHeaderProvider, resolveLocalKeyProvider, describeKeySources } from './dsh-host.js';
 
 // ─────────────────────────── 插件配置类型 ───────────────────────────
 
@@ -254,10 +254,11 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
   // 插件本身无需持有任何 API Key（DSH 自动注入用户配置的 Key）。
   const hostChat = resolveHostLLM(ctx);
   const hostModels = resolveHostModels(ctx);
-  // 请求头注入优先级：DSH 宿主 ctx 注入 > 宿主本地密钥自动填入（环境变量/本地配置）
+  // 请求头注入优先级：DSH 宿主 ctx 注入 > 宿主本地密钥自动填入（环境变量/本地配置，支持多密钥轮换）
   const ctxHeaderProvider = resolveHeaderProvider(ctx);
   const localKeyProvider = resolveLocalKeyProvider();
-  const headerProvider = (modelId: string) => ctxHeaderProvider?.(modelId) ?? localKeyProvider(modelId);
+  const headerProvider = (modelId: string, keyAttempt = 0) =>
+    (keyAttempt === 0 ? ctxHeaderProvider?.(modelId) : undefined) ?? localKeyProvider(modelId, keyAttempt);
   const mergedModels: ModelConfig[] = [...hostModels];
   for (const model of cfg.models ?? []) {
     if (!mergedModels.some((m) => m.id === model.id)) mergedModels.push(model);
@@ -306,7 +307,11 @@ export function apply(ctx: Context, config: Partial<SchedulerConfig>): void {
   }
   const strategistId = cfg.strategistModel?.id ?? mergedModels[0]?.id ?? llm.getModelIds()[0];
   if (hostChat) logger.info('LLM 调用已委托给 DSH 宿主客户端（Key 由宿主注入）');
-  else logger.info('模型 Key 自动经请求头注入（优先级：宿主 ctx → 本地环境变量 → 本地配置文件）');
+  else logger.info('模型 Key 自动经请求头注入（优先级：宿主 ctx → 本地环境变量 → 本地配置文件，认证失败自动轮换）');
+  for (const model of mergedModels) {
+    const sources = describeKeySources(model.id);
+    if (sources.length > 0) logger.info('模型 %s 密钥来源: %s', model.id, sources.join(', '));
+  }
 
   // ── 能力层 ──
   const tenantManager = new TenantManager(path.join(dataDir, 'tenants'), cryptoEngine ?? undefined);
