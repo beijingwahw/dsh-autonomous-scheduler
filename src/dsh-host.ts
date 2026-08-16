@@ -16,6 +16,8 @@
  * 由 index.ts 回退到 cordis.yml 中的 models 配置。
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
 import type { Context } from '@deepseek-ai/cordis';
 import type { ChatMessage, ChatOptions, LLMResponse, ModelConfig } from './llm-client.js';
 
@@ -133,4 +135,107 @@ export function resolveHeaderProvider(
     };
   }
   return undefined;
+}
+
+// ─────────────────────────── 本地密钥自动填入 ───────────────────────────
+
+/** 厂商识别规则：模型 id 前缀 → 环境变量候选列表 */
+const VENDOR_ENV_VARS: Array<{ match: RegExp; envVars: string[] }> = [
+  { match: /^deepseek/i, envVars: ['DEEPSEEK_API_KEY'] },
+  { match: /^qwen|^qwq/i, envVars: ['DASHSCOPE_API_KEY', 'QWEN_API_KEY', 'ALIBABA_CLOUD_API_KEY'] },
+  { match: /^glm|^chatglm/i, envVars: ['ZHIPU_API_KEY', 'ZHIPUAI_API_KEY'] },
+  { match: /^moonshot|^kimi/i, envVars: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'] },
+  { match: /^abab/i, envVars: ['MINIMAX_API_KEY'] },
+  { match: /^general|^spark/i, envVars: ['SPARK_API_KEY', 'IFLYTEK_API_KEY', 'XFYUN_API_KEY'] },
+  { match: /^hunyuan/i, envVars: ['HUNYUAN_API_KEY', 'TENCENT_HUNYUAN_API_KEY'] },
+  { match: /^ernie/i, envVars: ['QIANFAN_API_KEY', 'ERNIE_API_KEY', 'BAIDU_API_KEY'] },
+  { match: /^sensechat|^sense/i, envVars: ['SENSENOVA_API_KEY', 'SENSETIME_API_KEY'] },
+];
+
+/** DSH 本地配置文件探测路径（宿主在本地保存用户 Web UI 配置的常见位置） */
+const LOCAL_CONFIG_PATHS = [
+  '~/.dsh/config.json',
+  '~/.dsh/llm.json',
+  '~/.config/dsh/config.json',
+  '~/.config/dsh/llm.json',
+  '~/.deepseek-harness/config.json',
+];
+
+/** 按模型 id 识别厂商环境变量并返回首个非空值 */
+function envKeyForModel(modelId: string): string | undefined {
+  for (const rule of VENDOR_ENV_VARS) {
+    if (!rule.match.test(modelId)) continue;
+    for (const envVar of rule.envVars) {
+      const value = process.env[envVar];
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
+/** 深度优先查找对象中的 apiKey 字段（兼容 models 数组 / 厂商键两种形态） */
+function findApiKeyInConfig(obj: any, modelId: string): string | undefined {
+  if (!obj || typeof obj !== 'object') return undefined;
+
+  // models 数组形态：[{ id, apiKey }]
+  if (Array.isArray(obj.models)) {
+    for (const entry of obj.models) {
+      if (entry?.id === modelId && typeof entry.apiKey === 'string' && entry.apiKey) return entry.apiKey;
+    }
+  }
+
+  // 精确模型键：{ "deepseek-v4-pro": { apiKey } } 或 { "deepseek-v4-pro": "sk-..." }
+  const exact = obj[modelId];
+  if (typeof exact === 'string' && exact) return exact;
+  if (exact && typeof exact === 'object' && typeof exact.apiKey === 'string' && exact.apiKey) return exact.apiKey;
+
+  // 厂商键：{ deepseek: { apiKey } } / { deepseek: "sk-..." }
+  for (const rule of VENDOR_ENV_VARS) {
+    if (!rule.match.test(modelId)) continue;
+    for (const vendorKey of rule.envVars[0].replace(/_API_KEY$/, '').toLowerCase().split('_').slice(0, 1)) {
+      const entry = obj[vendorKey];
+      if (typeof entry === 'string' && entry) return entry;
+      if (entry && typeof entry === 'object' && typeof entry.apiKey === 'string' && entry.apiKey) return entry.apiKey;
+    }
+  }
+
+  // 全局兜底：{ apiKey } / { llm: { apiKey } }
+  if (typeof obj.apiKey === 'string' && obj.apiKey) return obj.apiKey;
+  if (obj.llm && typeof obj.llm === 'object') return findApiKeyInConfig(obj.llm, modelId);
+  return undefined;
+}
+
+/** 读取并缓存本地配置文件（只读一次，失败静默） */
+let localConfigCache: any | null | undefined;
+function loadLocalConfig(): any | null {
+  if (localConfigCache !== undefined) return localConfigCache;
+  for (const rawPath of LOCAL_CONFIG_PATHS) {
+    const filePath = rawPath.startsWith('~') ? rawPath.replace('~', os.homedir()) : rawPath;
+    try {
+      localConfigCache = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return localConfigCache;
+    } catch {
+      /* 路径不存在或解析失败，继续下一个 */
+    }
+  }
+  localConfigCache = null;
+  return null;
+}
+
+/**
+ * 本地密钥提供器：自动从宿主本地来源读取 Key 并填入 Authorization 请求头。
+ * 查找顺序（首个命中即用）：
+ * 1. 进程环境变量（按模型 id 前缀匹配厂商，如 DEEPSEEK_API_KEY）；
+ * 2. DSH 本地配置文件（~/.dsh/config.json 等，用户在 Web UI 配置的落盘位置）。
+ * 密钥只进内存、不落盘、不打印日志。
+ * @returns 按 modelId 返回请求头的函数；无任何本地来源时仍返回函数（返回 undefined 头）
+ */
+export function resolveLocalKeyProvider(): (modelId: string) => Record<string, string> | undefined {
+  return (modelId) => {
+    const envKey = envKeyForModel(modelId);
+    if (envKey) return { Authorization: `Bearer ${envKey}` };
+    const fileKey = findApiKeyInConfig(loadLocalConfig(), modelId);
+    if (fileKey) return { Authorization: `Bearer ${fileKey}` };
+    return undefined;
+  };
 }

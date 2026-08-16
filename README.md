@@ -89,6 +89,7 @@ pnpm build
 
 - 随附的 [cordis.yml](./cordis.yml) 已封装全部国产模型（DeepSeek / 通义千问 / 智谱 / Kimi / MiniMax / 讯飞星火 / 腾讯混元 / 百度文心 / 商汤日日新），加载即用；
 - 运行时插件经 ctx 上下文获取 DSH 已配置好的 LLM 客户端，DSH 自动把用户配置的 Key（Web UI 填写或环境变量配置）注入请求头；
+- **密钥自动填入**：插件还会自动读取宿主本地密钥并按厂商匹配填入请求头，优先级为 宿主 ctx 注入 → 进程环境变量（如 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`，按模型 id 前缀匹配厂商）→ DSH 本地配置文件（`~/.dsh/config.json` 等）；密钥只进内存，不落盘、不打印；
 - 若只需单一厂商，可改用 `patches/domestic-models/` 下按厂商拆分的 patch；重新生成：`pnpm generate:patches`。
 
 完整运行配置项（哨兵 / 加密 / 同步 / 共识 / 热更新 / 租户）同样内置于 [cordis.yml](./cordis.yml)，无需改动。
