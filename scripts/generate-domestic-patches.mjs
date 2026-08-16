@@ -172,6 +172,62 @@ ${allModels.join('\n')}
 `;
 }
 
+/** 渲染根目录 cordis patch YML（封装全部国产模型 + 运行配置，零密钥） */
+function renderRootPatch() {
+  const allModels = [];
+  for (const vendor of VENDORS) {
+    VENDORS_CURRENT = vendor;
+    for (const m of vendor.models) allModels.push(renderModel(m, 6));
+  }
+  return `# cordis patch — dsh-autonomous-scheduler（开箱即用，零手动配置）
+# 已封装全部国产模型：${VENDORS.map((v) => v.id).join(' / ')}
+# 无需填写任何 apiKey：插件经 ctx 获取 DSH 已配置的 LLM 客户端，
+# DSH 自动把用户配置的 Key（Web UI / 环境变量）注入请求头。
+- name: dsh-autonomous-scheduler
+  config:
+    strategistModel:
+      id: deepseek-v4-pro
+      endpoint: https://api.deepseek.com
+    models:
+${allModels.join('\n')}
+    sentinel:
+      watchCodeChanges: true
+      watchErrors: true
+      watchPerformance: true
+      aggregationWindow: 5
+    qualityThreshold: 0.7
+    maxRetries: 2
+    globalTimeout: 300000
+    enableProgress: true
+    progressPort: 9877
+    verbose: true
+    experienceStorePath: .scheduler/memory.json
+    encryption:
+      enabled: false
+      algorithm: aes-256-gcm
+      fullFileEncryption: true
+    sync:
+      localNodeId: "node-dev-01"
+      peers: []
+    consensus:
+      enabled: false
+      localNodeId: "node-01"
+      consensusPort: 9880
+      electionTimeoutMin: 1500
+      electionTimeoutMax: 3000
+      heartbeatInterval: 500
+      cluster: []
+    hotReload:
+      enabled: false
+      watchDirs: [src]
+      watchExtensions: [.ts, .tsx, .js]
+      debounceMs: 1000
+      buildCommand: pnpm build
+      autoRollback: true
+    tenants: []
+`;
+}
+
 fs.mkdirSync(outDir, { recursive: true });
 let count = 0;
 for (const vendor of VENDORS) {
@@ -179,4 +235,6 @@ for (const vendor of VENDORS) {
   count += 1;
 }
 fs.writeFileSync(path.join(outDir, 'all-domestic.yml'), renderAllPatch());
-console.log(`已生成 ${count} 个厂商 patch + all-domestic.yml → ${outDir}`);
+// 根目录 cordis.yml 同步升级为封装全部国产模型的 patch YML（零密钥、开箱即用）
+fs.writeFileSync(path.resolve(__dirname, '../cordis.yml'), renderRootPatch());
+console.log(`已生成 ${count} 个厂商 patch + all-domestic.yml → ${outDir}，并升级根目录 cordis.yml`);

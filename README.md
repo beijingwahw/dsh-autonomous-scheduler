@@ -83,35 +83,15 @@ pnpm install
 pnpm build
 ```
 
-## 配置
+## 配置（零手动配置）
 
-**插件本身不持有任何 API Key。** 插件通过 ctx 上下文获取 DSH 已配置好的 LLM 客户端；DSH 会自动把用户配置的 Key（无论 Web UI 填写还是环境变量配置）注入请求头。
+**开箱即用，无需手动配置任何模型或密钥，插件本身也不持有任何 API Key。**
 
-- 宿主提供 LLM 客户端 / 模型目录时，插件直接使用，无需配置 `models` / `strategistModel` / `apiKey`；
-- 宿主未提供时，从 `patches/domestic-models/` 选用国产模型 patch 兜底（同样不含密钥）：
+- 随附的 [cordis.yml](./cordis.yml) 已封装全部国产模型（DeepSeek / 通义千问 / 智谱 / Kimi / MiniMax / 讯飞星火 / 腾讯混元 / 百度文心 / 商汤日日新），加载即用；
+- 运行时插件经 ctx 上下文获取 DSH 已配置好的 LLM 客户端，DSH 自动把用户配置的 Key（Web UI 填写或环境变量配置）注入请求头；
+- 若只需单一厂商，可改用 `patches/domestic-models/` 下按厂商拆分的 patch；重新生成：`pnpm generate:patches`。
 
-```yaml
-- name: dsh-autonomous-scheduler
-  config:
-    strategistModel:
-      id: deepseek-v4-pro
-      endpoint: https://api.deepseek.com
-    models:
-      - id: deepseek-v4-pro
-        endpoint: https://api.deepseek.com
-        timeout: 90000
-        maxConcurrency: 3
-        costPerKToken: 0.014
-        contextWindow: 128000
-    sentinel:
-      watchCodeChanges: true
-      aggregationWindow: 5
-    qualityThreshold: 0.7
-```
-
-`patches/domestic-models/` 含 9 个国产厂商 patch（DeepSeek / 通义千问 / 智谱 / Kimi / MiniMax / 讯飞星火 / 腾讯混元 / 百度文心 / 商汤日日新）及合并版 `all-domestic.yml`，各厂商对应环境变量见文件头注释。重新生成：`pnpm generate:patches`。
-
-完整配置项（加密 / 同步 / 共识 / 热更新 / 租户）见仓库内 [cordis.yml](./cordis.yml)。
+完整运行配置项（哨兵 / 加密 / 同步 / 共识 / 热更新 / 租户）同样内置于 [cordis.yml](./cordis.yml)，无需改动。
 
 ## 工具调用示例
 

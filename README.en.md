@@ -84,35 +84,15 @@ pnpm install
 pnpm build
 ```
 
-## Configuration
+## Configuration (Zero Manual Setup)
 
-**The plugin itself never holds an API Key.** It obtains the configured LLM client from the ctx context; DSH automatically injects the user-configured Key (from the Web UI or environment variables) into request headers.
+**Works out of the box — no manual model or key configuration required, and the plugin itself never holds an API Key.**
 
-- When the host provides an LLM client / model catalog, the plugin uses it directly — no `models` / `strategistModel` / `apiKey` configuration needed;
-- Otherwise, fall back to a domestic-model patch from `patches/domestic-models/` (also key-free):
+- The bundled [cordis.yml](./cordis.yml) already packages all domestic models (DeepSeek / Qwen / Zhipu GLM / Kimi / MiniMax / iFlytek Spark / Tencent Hunyuan / Baidu ERNIE / SenseTime SenseChat); load and run;
+- At runtime the plugin obtains the configured LLM client from the ctx context, and DSH automatically injects the user-configured Key (Web UI or environment variables) into request headers;
+- For a single vendor only, use the per-vendor patches under `patches/domestic-models/`; regenerate with `pnpm generate:patches`.
 
-```yaml
-- name: dsh-autonomous-scheduler
-  config:
-    strategistModel:
-      id: deepseek-v4-pro
-      endpoint: https://api.deepseek.com
-    models:
-      - id: deepseek-v4-pro
-        endpoint: https://api.deepseek.com
-        timeout: 90000
-        maxConcurrency: 3
-        costPerKToken: 0.014
-        contextWindow: 128000
-    sentinel:
-      watchCodeChanges: true
-      aggregationWindow: 5
-    qualityThreshold: 0.7
-```
-
-`patches/domestic-models/` contains patches for 9 domestic vendors (DeepSeek / Qwen / Zhipu GLM / Kimi / MiniMax / iFlytek Spark / Tencent Hunyuan / Baidu ERNIE / SenseTime SenseChat) plus a merged `all-domestic.yml`; each vendor's environment variable is documented in the file header. Regenerate with `pnpm generate:patches`.
-
-Full configuration options (encryption / sync / consensus / hot reload / tenants) are documented in [cordis.yml](./cordis.yml).
+All runtime options (sentinel / encryption / sync / consensus / hot reload / tenants) are likewise built into [cordis.yml](./cordis.yml) and need no changes.
 
 ## Tool Usage Example
 
