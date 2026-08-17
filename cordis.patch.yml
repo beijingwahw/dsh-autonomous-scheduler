@@ -178,6 +178,7 @@
           watchErrors: true
           watchPerformance: true
           aggregationWindow: 5
+          signalSources: []
         qualityThreshold: 0.7
         maxRetries: 2
         globalTimeout: 300000
@@ -208,3 +209,19 @@
           buildCommand: pnpm build
           autoRollback: true
         tenants: []
+        # ── 以下键完整列出 schema/运行时默认值：用户层按 id 覆盖是整行替换（非深度合并），
+        #    bundle 层全部显式给出，照抄即得完整行，不会漏键回退到隐式默认。
+        # 数据目录（心智报告 / 审计日志 / 租户库 / raft 日志落盘处）
+        dataDir: '.scheduler'
+        # 模式置信度 ≥ 此阈值走记忆快路径（运行时缺省 0.9）
+        memoryFastPathThreshold: 0.9
+        # 自主心跳外环：设 { enabled: false } 可完全关闭自主循环
+        autonomy:
+          enabled: true
+          heartbeatMs: 30000
+        # 宿主融合层：全宿主工具可观测 + 安全治理；关闭后 isActive()=false
+        hostFusion:
+          enabled: true
+          observeToolResults: true
+          governToolCalls: true
+          failureEscalationThreshold: 3
