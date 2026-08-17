@@ -121,6 +121,7 @@
 ## 安装
 
 要求：Node.js `^22.18.0 || >=24.11.0`、pnpm。
+将本仓库放入 DeepSeek Harness 的插件目录（或通过包管理器安装），Harness 会依据 dsh.plugin.json 与 cordis.patch.yml 自动加载。
 
 ```bash
 git clone https://github.com/beijingwahw/dsh-proactive.git
