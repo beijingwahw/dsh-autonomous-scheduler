@@ -129,15 +129,6 @@ dsh plugin add beijingwahw/dsh-proactive --profile web
 dsh web
 ```
 
-也可以从源码安装：
-
-```bash
-git clone https://github.com/beijingwahw/dsh-proactive.git
-cd dsh-proactive
-pnpm install
-pnpm build
-```
-
 ## 配置（零手动配置）
 
 **开箱即用，无需手动配置任何模型或密钥，插件本身也不持有任何 API Key。**
