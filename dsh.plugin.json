@@ -1,0 +1,32 @@
+{
+  "id": "dsh-proactive",
+  "version": "0.1.0",
+  "main": "dist/index.mjs",
+  "description": "自主智能多模型协同调度系统 — 主动感知、自主决策、多模型并行、质量反思自愈、经验沉淀进化",
+  "engines": {
+    "dsh": ">=0.0.1"
+  },
+  "contributes": {
+    "tools": [
+      "autonomous_execute",
+      "model_dashboard",
+      "query_memory",
+      "query_experience",
+      "distill_knowledge",
+      "mental_report",
+      "self_knowledge",
+      "meta_cognition",
+      "maintain_memory",
+      "manage_tenants",
+      "manage_encryption",
+      "memory_migration",
+      "manage_sync",
+      "manage_consensus",
+      "manage_hot_reload",
+      "manage_keys",
+      "manage_autonomy",
+      "run_benchmark"
+    ],
+    "skills": []
+  }
+}

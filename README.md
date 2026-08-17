@@ -120,9 +120,16 @@
 
 ## 安装
 
-要求：Node.js `^22.18.0 || >=24.11.0`、pnpm。
+要求：Node.js `^22.18.0 || >=24.11.0`。
 
-将本仓库放入 DeepSeek Harness 的插件目录（或通过包管理器安装），Harness 会依据 dsh.plugin.json 与 cordis.patch.yml 自动加载。
+推荐用 dsh CLI 一键安装（`--profile` 指定目标 profile，如 `web`；构建产物 `dist/` 已随仓库分发，安装零构建脚本）：
+
+```bash
+dsh plugin add beijingwahw/dsh-proactive --profile web
+dsh web
+```
+
+也可以从源码安装：
 
 ```bash
 git clone https://github.com/beijingwahw/dsh-proactive.git
@@ -203,7 +210,7 @@ node scripts/verify-self-evolution.mjs # 自进化闭环：推荐采纳 / 快路
 - **官方 Tool 注册链路**：宿主加载 `@deepseek-ai/dsh-tools`（`ctx.tools` 服务）时，18 个 Tool 经 duck-typing 桥接注册进官方 ToolRegistry，纳入 pre/around/post 执行管线与模型可见面（参数转为官方 JSON Schema 子集）；宿主未提供时静默降级为内部 ToolRegistry + `ctx.provide('schedulerTools')`，不引入整套 agent 栈依赖；
 - **依赖注入与服务声明**：经 `ctx.provide('scheduler' / 'schedulerTools')` 暴露服务面，并通过 TypeScript 声明合并（`declare module '@deepseek-ai/cordis'`）为 `Context` 注入类型；
 - **生命周期清理**：全部资源在 fiber 卸载时经 `ctx.effect` 按依赖逆序清理（含官方 Tool 注销）；
-- **发布清单**：`package.json` 声明 `dsh.bundle.patch` 指向 [cordis.patch.yml](./cordis.patch.yml) bundle 配置层，`exports` / `files` / `engines` / `keywords` 齐备，`prepare` 脚本保证安装即构建。
+- **发布清单**：`package.json` 声明 `dsh.bundle.patch` 指向 [cordis.patch.yml](./cordis.patch.yml) bundle 配置层，`exports` / `files` / `engines` / `keywords` 齐备，dist/ 构建产物随仓库分发（安装零构建脚本，规避 pnpm allowBuilds 拦截）。
 
 ## 宿主融合层（Host Fusion）
 

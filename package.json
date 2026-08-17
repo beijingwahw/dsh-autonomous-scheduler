@@ -22,7 +22,6 @@
   ],
   "scripts": {
     "build": "tsdown src/index.ts --format esm --dts",
-    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "generate:patches": "node scripts/generate-domestic-patches.mjs"
   },
@@ -37,11 +36,14 @@
   "engines": {
     "node": "^22.18.0 || >=24.11.0"
   },
-  "dependencies": {
-    "@deepseek-ai/cordis": "latest",
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "latest",
+    "@deepseek-ai/schemastery": "^3.18.1",
     "@types/node": "^26.2.0",
     "tsdown": "latest",
     "typescript": "latest"
