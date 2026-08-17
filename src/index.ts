@@ -73,7 +73,7 @@ import { resolveHostLLM, resolveHostModels, resolveHeaderProvider, resolveLocalK
 
 // ─────────────────────────── 插件配置类型 ───────────────────────────
 
-/** 插件配置（对应 cordis.yml config 节） */
+/** 插件配置（对应 cordis.patch.yml config 节） */
 export interface SchedulerConfig {
   /** 可选：DSH 宿主经 ctx 提供模型时无需配置；apiKey 亦可省略（宿主注入请求头） */
   strategistModel?: { id: string; endpoint: string; apiKey?: string };

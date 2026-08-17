@@ -24,7 +24,7 @@ export interface ChatMessage {
   content: string;
 }
 
-/** 模型端点配置（cordis.yml models[] 条目 + strategistModel 的公共形态） */
+/** 模型端点配置（cordis.patch.yml models[] 条目 + strategistModel 的公共形态） */
 export interface ModelConfig {
   id: string;
   name?: string;

@@ -20,7 +20,7 @@ export class AppError extends Error {
   }
 }
 
-/** 配置错误：cordis.yml / 租户配置非法或缺失 */
+/** 配置错误：cordis.patch.yml / 租户配置非法或缺失 */
 export class ConfigError extends AppError {
   constructor(message: string, details?: Record<string, unknown>) {
     super(message, 'CONFIG_ERROR', details);

@@ -242,6 +242,6 @@ for (const vendor of VENDORS) {
   count += 1;
 }
 fs.writeFileSync(path.join(outDir, 'all-domestic.yml'), renderAllPatch());
-// 根目录 cordis.yml 同步升级为封装全部国产模型的 patch YML（零密钥、开箱即用）
-fs.writeFileSync(path.resolve(__dirname, '../cordis.yml'), renderRootPatch());
-console.log(`已生成 ${count} 个厂商 patch + all-domestic.yml → ${outDir}，并升级根目录 cordis.yml`);
+// 根目录 cordis.patch.yml 同步升级为封装全部国产模型的 patch YML（零密钥、开箱即用）
+fs.writeFileSync(path.resolve(__dirname, '../cordis.patch.yml'), renderRootPatch());
+console.log(`已生成 ${count} 个厂商 patch + all-domestic.yml → ${outDir}，并升级根目录 cordis.patch.yml`);

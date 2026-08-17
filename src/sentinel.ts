@@ -76,7 +76,7 @@ export interface SignalSourceConfig {
   signalType: string;
 }
 
-/** 哨兵配置（对应 cordis.yml sentinel 节） */
+/** 哨兵配置（对应 cordis.patch.yml sentinel 节） */
 export interface SentinelConfig {
   watchCodeChanges: boolean;
   watchErrors: boolean;

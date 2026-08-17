@@ -15,7 +15,7 @@
   "files": [
     "dist",
     "patches",
-    "cordis.yml",
+    "cordis.patch.yml",
     "README.md",
     "README.en.md",
     "LICENSE"
@@ -48,7 +48,7 @@
   },
   "dsh": {
     "bundle": {
-      "patch": "./cordis.yml"
+      "patch": "./cordis.patch.yml"
     }
   }
 }

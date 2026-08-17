@@ -61,7 +61,7 @@ export class ProgressBroadcaster {
   private httpHandler: ((req: http.IncomingMessage, res: http.ServerResponse) => boolean) | null = null;
 
   /**
-   * @param port 监听端口，默认 9877（与 cordis.yml progressPort 一致）
+   * @param port 监听端口，默认 9877（与 cordis.patch.yml progressPort 一致）
    */
   constructor(port: number = 9877) {
     this.port = port;

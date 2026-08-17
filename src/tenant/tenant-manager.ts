@@ -98,7 +98,7 @@ export interface TenantRegistry {
   };
 }
 
-/** 注册表默认值（与 cordis.yml 全局配置对齐） */
+/** 注册表默认值（与 cordis.patch.yml 全局配置对齐） */
 const DEFAULT_GLOBALS: TenantRegistry['globalDefaults'] = {
   qualityThreshold: 0.7,
   maxRetries: 2,

@@ -13,7 +13,7 @@
  *    DSH 会把用户在 Web UI / 环境变量中配置的 Key 注入请求头。
  *
  * 解析顺序遵循"宿主优先、配置兜底"：任何一项解析失败都不阻断插件启动，
- * 由 index.ts 回退到 cordis.yml 中的 models 配置。
+ * 由 index.ts 回退到 cordis.patch.yml 中的 models 配置。
  */
 
 import fs from 'node:fs';
